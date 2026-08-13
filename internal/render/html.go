@@ -119,6 +119,8 @@ func Text(fragment string) string {
 				state.strike = max(0, state.strike-1)
 			case "code", "pre":
 				state.code = max(0, state.code-1)
+			case "p", "h1", "h2", "h3", "h4", "blockquote", "li":
+				out.WriteString("\n")
 			case "a":
 				if len(links) > 0 {
 					l := links[len(links)-1]
@@ -130,7 +132,7 @@ func Text(fragment string) string {
 			}
 		}
 	}
-	return out.String()
+	return strings.TrimRight(out.String(), "\n \t")
 }
 
 // attr fetches an attribute value from a token.

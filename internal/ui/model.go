@@ -174,7 +174,8 @@ func (m *Model) handleEvent(e client.Event) {
 	case protocol.Authenticated:
 		m.self = msg.Username
 		if motd := msg.MOTDText(); motd != "" {
-			m.push(item{kind: "event", text: eventStyle.Render(motd)})
+			m.push(item{kind: "event",
+				text: eventStyle.Render(render.Text(motd))})
 		}
 	case protocol.Message:
 		m.pushMessage(msg)
@@ -305,7 +306,7 @@ func (m Model) View() string {
 		" enter send · pgup/pgdn scroll · ctrl+s spoilers · ctrl+c quit")
 	return statusStyle.Width(m.vp.Width).Render(status) + "\n" +
 		m.vp.View() + "\n" +
-		"> " + m.input.View() + "\n" +
+		m.input.View() + "\n" +
 		help
 }
 

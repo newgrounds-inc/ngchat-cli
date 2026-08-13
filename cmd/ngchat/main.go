@@ -95,6 +95,13 @@ func main() {
 // long-term path for all users), otherwise interactive username/password
 // (interim, allowlisted bot accounts only — ADR 0001).
 func buildMinter(store auth.Store, jwtURL, routing, user string) (auth.Minter, error) {
+	if cookie := os.Getenv("NGCHAT_NG_COOKIE"); cookie != "" {
+		return &auth.CookieMinter{
+			JWTURL:   jwtURL,
+			NGCookie: cookie,
+			Cookie:   routing,
+		}, nil
+	}
 	if cookie, err := store.Load(rememberCookieKey); err == nil {
 		return &auth.CookieMinter{
 			JWTURL:   jwtURL,
@@ -171,6 +178,7 @@ environment:
   NGCHAT_WS_URL           chat WebSocket URL (default %s)
   NGCHAT_JWT_URL          jwt.php URL (default %s)
   NGCHAT_ROUTING_COOKIE   extra cookie for the dev/staging proxy
+  NGCHAT_NG_COOKIE        NG cookie header (overrides the stored one)
 `, defaultWSURL, defaultJWTURL)
 }
 

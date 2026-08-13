@@ -259,6 +259,11 @@ func (c *Client) deliverBackfill(ctx context.Context, sub protocol.Subscribed) {
 	}
 	gap := c.everSaw && !overlap && len(fresh) > 0
 	c.emit(ctx, Event{Msg: sub, State: StateOnline, Gap: gap})
+	// The buffer arrives newest-first; replay oldest-first so the
+	// transcript reads downward.
+	for i, j := 0, len(fresh)-1; i < j; i, j = i+1, j-1 {
+		fresh[i], fresh[j] = fresh[j], fresh[i]
+	}
 	for _, msg := range fresh {
 		if c.markSeen(msg) {
 			c.emit(ctx, Event{Msg: msg, State: StateOnline})
