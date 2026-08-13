@@ -1,0 +1,78 @@
+package render
+
+import (
+	"regexp"
+	"testing"
+)
+
+// ansi matches SGR escape sequences so assertions can compare plain text
+// regardless of the color profile lipgloss detects in the test environment.
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func plain(s string) string { return ansi.ReplaceAllString(s, "") }
+
+func TestText(t *testing.T) {
+	tests := []struct {
+		name     string
+		fragment string
+		want     string
+	}{
+		{"plain", "hello", "hello"},
+		{"entities decoded", "a &amp; b &lt;c&gt;", "a & b <c>"},
+		{"bold", "<strong>bold</strong>", "bold"},
+		{"nested styles", "<strong>a <em>b</em></strong>", "a b"},
+		{"br becomes newline", "one<br>two", "one\ntwo"},
+		{"block end becomes newline", "<p>one</p><p>two</p>", "one\ntwo"},
+		{"unknown tag degrades to text", "<div><foo>text</foo></div>", "text"},
+		{"stray end tag does not panic", "</strong>text", "text"},
+		{"trailing whitespace trimmed", "text<br><br>", "text"},
+
+		// A link whose visible text already is the URL needs no repeat.
+		{"link text differs from href",
+			`<a href="https://example.com/x">click</a>`,
+			"click <https://example.com/x>"},
+		{"link text equals href",
+			`<a href="https://example.com/x">https://example.com/x</a>`,
+			"https://example.com/x"},
+		{"link without href", `<a>bare</a>`, "bare"},
+
+		{"image with alt and src",
+			`<img src="https://example.com/i.png" alt="cat">`,
+			"[cat] [image: https://example.com/i.png]"},
+		{"image without alt",
+			`<img src="https://example.com/i.png">`,
+			"[image: https://example.com/i.png]"},
+
+		{"emote from title",
+			`<span class="ng-emoticon-ngaHoldup ng-emoticon" title="ngaHoldup"></span>`,
+			":ngaHoldup:"},
+		{"emote from class",
+			`<span class="ng-emoticon-ngaWink ng-emoticon"></span>`,
+			":ngaWink:"},
+		{"emoticon marker without code renders nothing",
+			`<span class="ng-emoticon"></span>`, ""},
+		{"non-emote span passes through text",
+			`<span class="other">text</span>`, "text"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := plain(Text(tc.fragment)); got != tc.want {
+				t.Errorf("Text(%q)\n got %q\nwant %q",
+					tc.fragment, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTextStylesAreApplied guards the styling path itself, which the plain
+// comparisons above deliberately strip.
+func TestTextStylesAreApplied(t *testing.T) {
+	got := Text("<strong>bold</strong>")
+	if got == "bold" {
+		t.Skip("no color profile in this environment; styling is a no-op")
+	}
+	if plain(got) != "bold" {
+		t.Errorf("styled output %q does not reduce to %q", got, "bold")
+	}
+}

@@ -8,8 +8,9 @@ repository. `CLAUDE.md` imports it so Claude Code picks it up too.
 ```sh
 go build ./cmd/ngchat            # build the binary
 go vet ./...                     # vet everything
-go test ./...                    # no tests exist yet; add them as *_test.go
-go test -run TestName ./internal/render   # single test, once tests exist
+go test ./...                    # unit tests (no network, no keyring)
+go test -run TestDecodeTolerance ./internal/protocol   # a single test
+go test -cover ./internal/...    # coverage per package
 goreleaser release --snapshot --clean     # local cross-platform build check
 ```
 
@@ -92,3 +93,7 @@ is the viewport's, not the terminal's.
 - `docs/site-login-endpoints.md` is a working brief for the *site* repo,
   not work to do here.
 - Secrets never touch stdout or logs; `cmd/smoke` prints summaries only.
+- Tests are table-driven and hermetic: no network (use `httptest`), and no
+  writes to the real OS keyring or config dir (override `XDG_CONFIG_HOME`
+  and exercise the file fallback). Terminal styling is stripped with an ANSI
+  regexp before comparing, so assertions hold under any color profile.

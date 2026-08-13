@@ -98,11 +98,15 @@ func Text(fragment string) string {
 				links = append(links, &link{href: attr(t, "href")})
 			case "img":
 				src := attr(t, "src")
+				// The separator is conditional: without alt text an
+				// image-only message would start with a stray space.
+				sep := ""
 				if alt := attr(t, "alt"); alt != "" {
 					appendText("[" + alt + "]")
+					sep = " "
 				}
 				if src != "" {
-					out.WriteString(dimStyle.Render(" [image: " + src + "]"))
+					out.WriteString(dimStyle.Render(sep + "[image: " + src + "]"))
 				}
 			case "span":
 				if code := emoteCode(t); code != "" {
