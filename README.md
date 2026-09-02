@@ -49,7 +49,7 @@ Against the NG dev/staging stack:
 ```sh
 export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws
 export NGCHAT_SITE_URL=https://www.newgrounds-d.com
-export NGCHAT_ROUTING_COOKIE='serverid=...'   # dev proxy routing
+export NGCHAT_ROUTING_COOKIE='serverid=bcolby2'   # dev proxy routing (this project's backend)
 ```
 
 `NGCHAT_NG_COOKIE` (a raw cookie header) bypasses the stored login.

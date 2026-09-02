@@ -156,6 +156,10 @@ are ticked and `go vet ./... && go test -race ./...` passes.
         undeliverable, 403 on a stale challenge, XSRF rotation between
         steps, 401 and 419 on service-token)
   - [ ] Live check with `cmd/smoke` once the site endpoints are on dev
+        (guest paths verified 2026-09-02: prime sets `XSRF-TOKEN` and
+        `newgrounds_session`, 419/422/403/401/406 shapes match, an
+        unauthenticated smoke stops with `signed out` and no reconnect;
+        the logged-in run still needs a human at the 2FA prompt)
 
 - [ ] **Phase 3 — UI**
   - [ ] Decode `Subscribed.userList`; keep a user list from

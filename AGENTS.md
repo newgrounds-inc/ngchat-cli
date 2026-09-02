@@ -21,11 +21,16 @@ event summaries, never tokens or cookies:
 ```sh
 export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws
 export NGCHAT_SITE_URL=https://www.newgrounds-d.com
-export NGCHAT_ROUTING_COOKIE='serverid=...'   # dev proxy routing, every request
+export NGCHAT_ROUTING_COOKIE='serverid=bcolby2'   # dev proxy routing, every request
 export SMOKE_NG_COOKIE='ng_remember=...'      # raw cookie header; optional
 export SMOKE_SECONDS=150                      # optional; default 15
 go run ./cmd/smoke
 ```
+
+The routing cookie is not a secret: it names the dev backend the proxy
+should pin you to, and `bcolby2` is the one this project's dev stack
+runs on (verified 2026-09-02; without it dev answers 503 for every
+request).
 
 Without `SMOKE_NG_COOKIE` the harness uses the remember cookie that
 `ngchat login` stored, which is how the login flow is verified end to
