@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -76,7 +77,9 @@ func TestDebugLogPathHonorsXDG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no POSIX mode bits: Go reports 0666 for any writable
+	// file there, so the check only means something on Unix.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("mode = %o, want 0600", info.Mode().Perm())
 	}
 	if !strings.HasPrefix(path, state) {
