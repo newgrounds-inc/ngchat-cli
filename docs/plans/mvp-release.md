@@ -187,14 +187,24 @@ are ticked and `go vet ./... && go test -race ./...` passes.
   - [x] Remove `-channel`; hard-code `general`
 
 - [ ] **Phase 4 — release hygiene and public flip**
-  - [ ] `.github/workflows/ci.yml`: vet, test, race on push and PR
-  - [ ] Renovate config for Go modules and Actions
-  - [ ] `SECURITY.md`
-  - [ ] README: login story, `/who`, `-quiet`, `-debug`, timestamps,
+  - [x] `.github/workflows/ci.yml`: vet, test, race on push and PR
+        (Linux, macOS, best-effort Windows), plus `go mod tidy` drift
+        and a GoReleaser snapshot build whose archives are uploaded as
+        a workflow artifact; Actions pinned to commit SHAs
+  - [x] Renovate config for Go modules and Actions (deny by default,
+        3-day release age, digest pins)
+  - [x] `SECURITY.md` (GitHub private vulnerability reporting; enable
+        it in the repo settings once public)
+  - [x] README: login story, `/who`, `-quiet`, `-debug`, timestamps,
         Windows note; drop "Status: scaffold"
-  - [ ] `CHANGELOG.md` seeded from `v0.1.0`
-  - [ ] End-to-end smoke against dev with the site login live
-  - [ ] Repo public; tag `v1.0.0`; confirm artifacts and checksums
+  - [x] `CHANGELOG.md` seeded from `v0.1.0`
+  - [x] End-to-end smoke against dev with the site login live
+        (2026-09-02, stored login: subscribed, backfill, send)
+  - [ ] Hands-on pass of `docs/manual-test-plan.md` on Linux/amd64,
+        macOS/arm64, Windows/amd64 and Windows/arm64
+  - [ ] Repo public; enable private vulnerability reporting (Settings
+        → Security → Policy) so the `SECURITY.md` button exists; tag
+        `v1.0.0`; confirm artifacts and checksums
 
 ## Out of scope for the MVP
 
