@@ -69,6 +69,10 @@ type fakeServer struct {
 	url      string
 	attempts atomic.Int32
 	wg       sync.WaitGroup
+	// deny, when set, answers the first authenticate with an unauthorized
+	// frame carrying this message and a reasonless close, the way the
+	// server's entry gates (supporter, age, e-mail) refuse a user.
+	deny string
 }
 
 func newFakeServer(t *testing.T, s script) *fakeServer {
@@ -132,6 +136,12 @@ func (fs *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	if m := next(ctx); m == nil || m["name"] != "authenticate" {
 		fs.t.Errorf("first frame = %v, want authenticate", m)
 		conn.Close(websocket.StatusProtocolError, "bad handshake")
+		return
+	}
+	if fs.deny != "" {
+		_ = send(ctx, conn, map[string]any{"name": "unauthorized",
+			"message": fs.deny, "serverTime": 1})
+		conn.Close(websocket.StatusNormalClosure, "")
 		return
 	}
 	_ = send(ctx, conn, map[string]any{"name": "authenticated",
@@ -503,5 +513,51 @@ func TestSignedOutOnRevalidateStops(t *testing.T) {
 	}
 	if hasMsg[RenewalFailed](events) {
 		t.Error("signed out must stop, not report a retryable renewal failure")
+	}
+}
+
+// TestAccessDeniedStops pins the entry-gate refusal: a pre-auth
+// unauthorized that is not a token problem is final, carries the
+// server's HTML message for the UI to render, and never reconnects.
+func TestAccessDeniedStops(t *testing.T) {
+	const notice = `NG Chat is a <a href="https://www.newgrounds.com/supporter">supporter only</a> feature, sorry 😕.`
+	fs := newFakeServer(t, func(*websocket.Conn, int, nextFn) string {
+		return "server close"
+	})
+	fs.deny = notice
+	minter := &countingMinter{}
+	events := runUntilStopped(t, fs, minter)
+	last := events[len(events)-1]
+	if last.State != StateStopped {
+		t.Fatalf("last event = %+v, want a stop", last)
+	}
+	var denied *AccessDenied
+	if !errors.As(last.Err, &denied) || denied.Message != notice {
+		t.Errorf("stop error = %v, want AccessDenied with the server's notice", last.Err)
+	}
+	if got := fs.attempts.Load(); got != 1 {
+		t.Errorf("connections = %d, want 1 (no reconnect)", got)
+	}
+	if got := minter.calls.Load(); got != 1 {
+		t.Errorf("mint calls = %d, want 1", got)
+	}
+}
+
+// TestBackfillDoneFollowsReplay: the marker lands after the last
+// replayed message and before any live one.
+func TestBackfillDoneFollowsReplay(t *testing.T) {
+	c := New(Config{})
+	ctx := context.Background()
+	c.deliverBackfill(ctx, protocol.Subscribed{ChannelID: 1,
+		MessageBuffer: []json.RawMessage{msgFrame(2), msgFrame(1)}})
+	events := drain(c)
+	if len(events) != 4 {
+		t.Fatalf("got %d events, want subscribed, 2 messages, done", len(events))
+	}
+	if _, ok := events[3].Msg.(BackfillDone); !ok {
+		t.Errorf("last event = %T, want BackfillDone", events[3].Msg)
+	}
+	if ids := msgIDs(events); len(ids) != 2 || ids[0] != 1 || ids[1] != 2 {
+		t.Errorf("replayed IDs = %v, want oldest first", ids)
 	}
 }

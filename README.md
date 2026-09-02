@@ -28,6 +28,9 @@ two-factor code if your account uses one (a TOTP recovery code works at
 the same prompt). `ngchat login` does the same on demand and `ngchat
 logout` clears it.
 
+NG Chat is a supporter-only feature. If your account is not one, ngchat
+exits with the server's notice after connecting.
+
 Only the site's long-lived remember cookie is stored; it mints
 short-lived chat tokens for you. Your password is never written to disk.
 If the site refuses the cookie (you changed your password), ngchat exits

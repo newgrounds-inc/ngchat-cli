@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
@@ -135,8 +137,29 @@ func TestHandleEventAuthenticatedSetsSelf(t *testing.T) {
 	if m.self != "bob" {
 		t.Errorf("self = %q, want bob", m.self)
 	}
+	m.handleEvent(client.Event{Msg: client.BackfillDone{}})
 	if len(m.items) != 0 {
 		t.Errorf("an empty MOTD should not push a row: %+v", m.items)
+	}
+}
+
+// TestMOTDFollowsBackfill: the banner lands under the replayed history,
+// not above it where the backfill would scroll it away.
+func TestMOTDFollowsBackfill(t *testing.T) {
+	m := newModel()
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{Username: "bob",
+		MOTD: json.RawMessage(`"Welcome to <b>NG Chat</b>"`)}})
+	if len(m.items) != 0 {
+		t.Fatalf("MOTD pushed before the backfill: %+v", m.items)
+	}
+	m.handleEvent(client.Event{Backfill: true, Msg: protocol.Message{
+		Name: "message", Username: "ann", Message: "old"}})
+	m.handleEvent(client.Event{Msg: client.BackfillDone{}})
+	if len(m.items) != 2 {
+		t.Fatalf("rows = %d, want history then MOTD", len(m.items))
+	}
+	if got := plain(m.renderItem(m.items[1])); got != "Welcome to NG Chat" {
+		t.Errorf("MOTD row = %q", got)
 	}
 }
 
@@ -243,15 +266,55 @@ func TestSignedOutQuits(t *testing.T) {
 		t.Errorf("command produced %T, want tea.QuitMsg", cmd())
 	}
 
-	// Any other stop keeps the screen up with the reason visible.
+	// Any other stop keeps the screen up with the reason visible, in
+	// the status bar and as a transcript row.
 	m = newModel()
 	m.handleEvent(client.Event{State: client.StateStopped,
 		Err: errors.New("kicked")})
-	if m.SignedOut() {
-		t.Error("SignedOut() = true for an unrelated stop")
+	if m.SignedOut() || m.leaves() {
+		t.Error("an unrelated stop must not leave the TUI")
 	}
 	if plain(m.stateLabel()) != "disconnected: kicked" {
 		t.Errorf("status = %q", m.stateLabel())
+	}
+	if len(m.items) != 1 || plain(m.renderItem(m.items[0])) != "disconnected: kicked" {
+		t.Errorf("transcript rows = %+v, want the stop reason", m.items)
+	}
+}
+
+// TestAccessDeniedQuitsWithNotice: the server's entry-gate HTML is
+// rendered for main to print, and the TUI leaves like a signed-out run.
+func TestAccessDeniedQuitsWithNotice(t *testing.T) {
+	m := newModel()
+	next, cmd := m.Update(client.Event{State: client.StateStopped,
+		Err: fmt.Errorf("access denied: %w", &client.AccessDenied{
+			Message: `NG Chat is a <a href="https://www.newgrounds.com/supporter">supporter only</a> feature, sorry 😕.`})})
+	got := plain(next.(Model).Denied())
+	want := "NG Chat is a supporter only <https://www.newgrounds.com/supporter> feature, sorry 😕."
+	if got != want {
+		t.Errorf("Denied() = %q, want %q", got, want)
+	}
+	if cmd == nil {
+		t.Fatal("no command returned, want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("command produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// TestStatusBarStaysOneLine: a long reason must truncate, never wrap the
+// bar into the viewport's rows.
+func TestStatusBarStaysOneLine(t *testing.T) {
+	m := newModel()
+	m.layout(40, 8)
+	m.handleEvent(client.Event{State: client.StateReconnecting,
+		Err: errors.New(strings.Repeat("long reason ", 20))})
+	first := strings.SplitN(m.View(), "\n", 2)[0]
+	if lipgloss.Width(first) > 40 {
+		t.Errorf("status bar is %d cells wide, want ≤ 40", lipgloss.Width(first))
+	}
+	if lines := strings.Count(m.View(), "\n"); lines != 8-1 {
+		t.Errorf("view has %d lines, want exactly the terminal height", lines+1)
 	}
 }
 

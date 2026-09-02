@@ -53,6 +53,23 @@ type Event struct {
 	Err error
 }
 
+// BackfillDone is emitted as Event.Msg once every message from a
+// subscribe's backfill buffer has been replayed, so the UI can place
+// anything that belongs after the history (the MOTD) at the bottom.
+type BackfillDone struct{}
+
+// AccessDenied is the cause of a stop when the server refuses the first
+// authenticate outright: not a supporter, under 18, e-mail not validated,
+// or banned. The site minted the token, so the account is not signed out;
+// nothing in the client can change the answer, so it is final. Message
+// is server-authored HTML (the supporter notice carries a link), so a
+// consumer renders it as markup.
+type AccessDenied struct {
+	Message string
+}
+
+func (e *AccessDenied) Error() string { return "access denied" }
+
 // RenewalFailed is emitted as Event.Msg when the client could not answer
 // a server Revalidate (the re-mint failed). It is informational: the
 // server's close timer is still armed, and the ordinary reconnect path
@@ -331,7 +348,13 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 			}
 			soft := strings.Contains(msg.Message, "expired") ||
 				strings.Contains(msg.Message, "malformed")
-			if !soft || authRetries >= maxAuthRetries {
+			if !soft {
+				return established, &stopError{
+					reason: "access denied",
+					err:    &AccessDenied{Message: msg.Message},
+				}
+			}
+			if authRetries >= maxAuthRetries {
 				return established, &stopError{
 					reason: "unauthorized: " + msg.Message,
 				}
@@ -455,6 +478,7 @@ func (c *Client) deliverBackfill(ctx context.Context, sub protocol.Subscribed) {
 			c.emit(ctx, Event{Msg: msg, State: StateOnline, Backfill: true})
 		}
 	}
+	c.emit(ctx, Event{Msg: BackfillDone{}, State: StateOnline})
 }
 
 // markSeen records a message ID, reporting false for duplicates (the

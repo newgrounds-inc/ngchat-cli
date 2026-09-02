@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
@@ -95,6 +96,7 @@ type Model struct {
 	stopErr        error
 	retryErr       error // why the last session ended, while reconnecting
 	self           string
+	motd           string // server HTML from Authenticated, shown after each backfill
 	typing         map[string]typingState
 	// users is the roster keyed by user ID, seeded by Subscribed and
 	// patched by userJoined, userLeft, userUpdated and away.
@@ -208,10 +210,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case client.Event:
 		m.handleEvent(msg)
-		if m.SignedOut() {
+		if m.leaves() {
 			// Nothing inside the TUI can fix a revoked remember cookie
-			// (no inline re-login), so leave the screen and let main
-			// print the one useful instruction.
+			// (no inline re-login) or an entry-gate refusal, so leave
+			// the screen and let main print the one useful line.
 			return m, tea.Quit
 		}
 		return m, waitEvent(m.chat.Events())
@@ -226,6 +228,24 @@ func (m Model) SignedOut() bool {
 		errors.Is(m.stopErr, auth.ErrSignedOut)
 }
 
+// Denied returns the server's entry-gate notice (supporter-only, under
+// 18, e-mail not validated, banned) as terminal text when that is why
+// the client stopped, else "". main prints it after the program exits:
+// the notice is the whole answer and nothing in the TUI can act on it.
+func (m Model) Denied() string {
+	var denied *client.AccessDenied
+	if m.state == client.StateStopped && errors.As(m.stopErr, &denied) {
+		return render.Text(denied.Message)
+	}
+	return ""
+}
+
+// leaves reports whether the stop is one the TUI should exit on rather
+// than sit disconnected: the user can do nothing about it from inside.
+func (m Model) leaves() bool {
+	return m.SignedOut() || m.Denied() != ""
+}
+
 // isWho matches the local /who command and nothing else; every other
 // slash command goes to the server, which parses them.
 func isWho(text string) bool {
@@ -238,6 +258,11 @@ func (m *Model) handleEvent(e client.Event) {
 	switch e.State {
 	case client.StateStopped:
 		m.stopErr = e.Err
+		// The status bar is one truncated line; the transcript row is
+		// where the full reason can be read.
+		if e.Err != nil {
+			m.pushEvent(errorStyle.Render("disconnected: "+e.Err.Error()), 0)
+		}
 	case client.StateReconnecting:
 		m.retryErr = e.Err
 	}
@@ -247,8 +272,12 @@ func (m *Model) handleEvent(e client.Event) {
 	switch msg := e.Msg.(type) {
 	case protocol.Authenticated:
 		m.self = msg.Username
-		if motd := msg.MOTDText(); motd != "" {
-			m.pushEvent(eventStyle.Render(render.Text(motd)), msg.ServerTime)
+		m.motd = msg.MOTDText()
+	case client.BackfillDone:
+		// Below the history so it is the first thing read on join, like
+		// the site's banner, rather than scrolled off by the backfill.
+		if m.motd != "" {
+			m.pushEvent(eventStyle.Render(render.Text(m.motd)), 0)
 		}
 	case protocol.Subscribed:
 		m.users = make(map[int]protocol.ChannelUser, len(msg.UserList))
@@ -517,6 +546,9 @@ func (m Model) View() string {
 	if names := m.typingNames(); names != "" {
 		status += " · " + names + " typing…"
 	}
+	// One line, always: a long stop reason would otherwise wrap the bar
+	// and push the layout off the bottom of the screen.
+	status = xansi.Truncate(status, max(0, m.vp.Width-2), "…")
 	help := helpStyle.Render(
 		" enter send · /who · pgup/pgdn scroll · ctrl+s spoilers · " +
 			"ctrl+t times · ctrl+c quit")

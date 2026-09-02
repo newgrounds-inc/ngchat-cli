@@ -148,8 +148,13 @@ func runChat(ctx context.Context, opts chatOptions) error {
 	if err != nil && ctx.Err() == nil {
 		return err
 	}
-	if m, ok := final.(ui.Model); ok && m.SignedOut() {
-		return errors.New(signedOutHint)
+	if m, ok := final.(ui.Model); ok {
+		if m.SignedOut() {
+			return errors.New(signedOutHint)
+		}
+		if notice := m.Denied(); notice != "" {
+			return errors.New(notice)
+		}
 	}
 	return nil
 }

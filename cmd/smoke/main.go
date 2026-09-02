@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -111,6 +112,10 @@ func main() {
 			fmt.Printf("UNKNOWN/undecodable frame: name=%q\n", msg.Name)
 		case nil:
 			fmt.Printf("state=%v err=%v\n", e.State, e.Err)
+			var denied *client.AccessDenied
+			if errors.As(e.Err, &denied) {
+				fmt.Printf("access denied: %s\n", render.Text(denied.Message))
+			}
 		default:
 			fmt.Printf("event %T\n", msg)
 		}

@@ -104,9 +104,13 @@ Three behaviors are load-bearing:
   `idleTimeout` frames themselves, hard auth failures). Before
   `authenticated`, an `unauthorized` containing "expired"/"malformed" is
   *soft*: re-mint and re-send `authenticate` on the same socket, up to 3
-  times. After `authenticated` it is never answered: it only precedes a
-  close, either token expiry (reason `token expired`, which reconnects)
-  or a rejected `reauthenticate`.
+  times. Any other pre-auth `unauthorized` is the server's entry gate
+  (not a supporter, under 18, e-mail not validated, banned): the stop
+  wraps `AccessDenied` carrying the server's HTML notice, which the TUI
+  renders and prints on exit, the same way a signed-out run prints
+  `run ngchat login`. After `authenticated` it is never answered: it
+  only precedes a close, either token expiry (reason `token expired`,
+  which reconnects) or a rejected `reauthenticate`.
 
 Heartbeat pings every 5s; the server drops sockets silent for 15s, and the
 20s read timeout doubles as the dead-link watchdog.
