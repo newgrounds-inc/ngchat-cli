@@ -2,53 +2,88 @@
 
 Two parts. **Contract** is what the CLI is built against
 (`httptest` fakes here, real endpoints in `newgrounds-site`). **Recon**
-below it is the August 2026 survey of the site's auth code that the
-contract was designed around. See ADR 0001 and
-`docs/plans/mvp-release.md` for the client-side decisions.
+below it is the August 2026 survey of the site's auth code, kept for
+history, with a corrections block on top from the 2026-09-02 site
+session. See ADR 0001 and `docs/plans/mvp-release.md` for the
+client-side decisions. The site-side implementation plan is
+`newgrounds-site/docs/plans/api-v1-auth-login.md`.
 
-## Contract (agreed 2026-09-02)
+## Contract (agreed 2026-09-02, revised the same day after the site review)
 
-All three new routes live under `/api/v1/auth/`, inside the existing
+Two new routes, not three, under `/api/v1/auth/` inside the existing
 `api/v1` group (JSend, `EnforceJsonContentNegotiation`, CSRF from the
-`web` group). Responses follow the site's `JsendResponse` envelope:
+`web` group). Responses use the site's `JsendResponse` envelope:
 `{"status":"success","data":{...}}`,
 `{"status":"fail","data":{...}}`,
 `{"status":"error","message":"...","code":...}`.
 
+In every `fail` body, `data` is a map of field name to a **list** of
+message strings (Laravel validation shape), e.g.
+`{"identity":["These credentials do not match our records."]}`. The CLI
+prints the first message of whichever key it recognises and falls back
+to the first message of any key.
+
 The CLI keeps an in-memory cookie jar for the run. Only the
 `ng_remember` value is persisted (OS keyring, `0600` file fallback).
 
-### `GET /api/v1/auth/csrf`
+### Request rules that apply to every call
 
-Primes the session and sets `XSRF-TOKEN`. Returns `204 No Content`.
-Guest-callable. Rate-limited under the general `api` limiter. The CLI
-calls it once before `login` and once per run before the first
-`service-token`; the jar carries the cookies after that. If a later POST
-returns 419 the CLI calls it again and retries once.
+- Send `Accept: application/json` and, on POST, `Content-Type:
+  application/json` with a JSON body. The group refuses a non-JSON
+  Accept with 406 and a non-JSON POST body with 415, both as JSend
+  `fail`.
+- Send `X-XSRF-TOKEN` on every POST: the current `XSRF-TOKEN` cookie
+  value from the jar, URL-decoded. **Read it from the jar immediately
+  before each POST**, never cache it: the site rotates the token when a
+  login completes (`login` success and `two-factor` success both
+  regenerate the session), so the value that worked for `login` is
+  stale by the time `service-token` is called.
+- `419` on any POST means CSRF mismatch: re-prime (below) and retry once.
+
+### Priming the jar (no dedicated endpoint)
+
+There is no `csrf` route. A guest `GET /api/v1/auth/me` answers
+`401` JSend `fail` `{"auth":["Unauthenticated."]}` **and** sets both the
+`XSRF-TOKEN` and session cookies, which is all the CLI needs. Verified on
+dev 2026-09-02. The CLI calls it once before `login` and once per run
+before the first `service-token`. Costs one hit of the guest `api`
+limiter (30/min per IP).
 
 ### `POST /api/v1/auth/login`
 
-Runs the **full** login pipeline (throttle → 2FA check → authenticate →
-session prep → retirement restore → login event → cleanup). Requires
-`X-XSRF-TOKEN` (the `XSRF-TOKEN` cookie, URL-decoded).
+Runs the **full** site login pipeline (the same one the account and
+passport pages use: throttle, credential check, 2FA challenge,
+authenticate, session regeneration, retirement restore, login event,
+cleanup). Guest-only: an already-authenticated jar gets 403.
 
 Request:
 
 ```json
-{"identifier": "username-or-email", "password": "...", "remember": true}
+{"identity": "username-or-email", "password": "...", "remember": true}
 ```
+
+`identity` is the site's field name (the shared `LoginRequest` is
+final, so the API reuses it as-is). `remember` is a boolean; the CLI
+always sends `true`.
 
 Outcomes:
 
 | HTTP | JSend | `data` | CLI action |
 | --- | --- | --- | --- |
-| 200 | success | `{"two_factor": null, "user": {"user_id", "username"}}` | logged in; store `ng_remember` from `Set-Cookie` |
-| 200 | success | `{"two_factor": "email"}` | prompt for the emailed code |
-| 200 | success | `{"two_factor": "totp"}` | prompt for the authenticator code |
-| 422 | fail | `{"credentials": "..."}` | show message, re-prompt (password step) |
-| 422 | fail | `{"login_type": "email_only"}` | show "this account has no password login", exit |
-| 429 | fail | `{"lockout": "...", "retry_after": <seconds>}` | show message with wait time, exit |
-| 403 | fail | `{"session": "already authenticated"}` | should not happen (fresh jar); clear jar and retry once |
+| 200 | success | `{"two_factor": null, "user": {"id", "username"}}` | logged in; store `ng_remember` from `Set-Cookie` |
+| 200 | success | `{"two_factor": "email", "obfuscated_email": "b***@example.com"}` | prompt for the emailed code (valid 1 hour) |
+| 200 | success | `{"two_factor": "totp", "obfuscated_email": null}` | prompt for the authenticator code, or a recovery code |
+| 422 | fail | `{"identity": ["..."]}` or `{"password": ["..."]}` | show message, re-prompt from the password step |
+| 422 | fail | `{"undeliverable": ["..."]}` | show the message verbatim, exit; the account's email cannot receive a code and only support can fix it |
+| 429 | fail | `{"identity": ["Too many login attempts. Please try again in ..."]}` | show message verbatim, exit. No `retry_after` field; the human-readable wait is inside the message |
+| 403 | fail | `{"http": ["..."]}` | jar is already authenticated; should not happen with a fresh jar. Clear jar, re-prime, retry once |
+
+Not distinguishable, by design: an account set to "Login with: Email
+only" that submits its **username** gets the same 422 as a wrong
+password. The site deliberately gives no distinguishing response so the
+preference cannot be probed. The CLI cannot show a specific "no password
+login" message; instead the login help text says to enter the email
+address if the account uses email-only login.
 
 `remember=true` is carried across the 2FA step by the site (session key
 `login.remember`), so the CLI does not resend it. The `two_factor` state
@@ -59,25 +94,32 @@ it from `Set-Cookie` and persists only that value.
 
 ### `POST /api/v1/auth/two-factor`
 
-Completes a challenge started by `login`. Same jar, same CSRF header.
+Completes a challenge started by `login`. Same jar, same CSRF rules.
 
-Request:
+Request, one of:
 
 ```json
 {"code": "123456"}
+{"recovery_code": "xxxx-xxxx"}
 ```
+
+`code` is exactly 6 characters (the emailed code or the TOTP code).
+`recovery_code` is a TOTP backup code, only meaningful when `login`
+returned `"totp"`; each one is single-use. The MVP CLI prompts for
+`code` and accepts `/recovery <code>` (or similar) to send a
+`recovery_code` instead.
 
 Outcomes:
 
 | HTTP | JSend | `data` | CLI action |
 | --- | --- | --- | --- |
-| 200 | success | `{"user": {"user_id", "username"}}` | logged in; store `ng_remember` |
-| 422 | fail | `{"code": "..."}` | re-prompt; after 3 failures restart from `login` |
-| 410 | fail | `{"challenge": "expired"}` | restart from `login` |
-| 503 | fail | `{"email": "undeliverable"}` | show the site's message verbatim, exit |
-| 429 | fail | `{"lockout": "...", "retry_after": <seconds>}` | show message with wait time, exit |
+| 200 | success | `{"user": {"id", "username"}}` | logged in; store `ng_remember` |
+| 422 | fail | `{"code": ["..."]}` or `{"recovery_code": ["..."]}` | re-prompt; after 3 failures restart from `login` |
+| 403 | fail | `{"http": ["..."]}` | no challenge in this session (expired, consumed, or the jar was reset): restart from `login` |
+| 429 | fail | `{"identity": ["Too many login attempts. ..."]}` | show message with the wait, exit |
 
-No resend endpoint in the MVP.
+No resend endpoint in the MVP. An emailed code expires after 1 hour;
+after that the site answers 422 and the CLI restarts from `login`.
 
 ### `POST /api/v1/auth/service-token` (exists today)
 
@@ -88,24 +130,60 @@ Used hourly for re-mint. Request `{"service": "chat"}` with the jar and
   possible today, so: password changed, or the CLI logged out). The
   CLI treats it as **signed out**: stop the client, exit the TUI, print
   `run ngchat login`. Never retry.
-- `419` means CSRF mismatch: re-prime with `csrf`, retry once.
+- `419` means CSRF mismatch: re-prime, retry once.
 - The `service_token` limiter (10/min per user or IP) counts **before**
   auth and CSRF, so any CLI loop also throttles the user's browser. The
   CLI mints exactly once per server `revalidate` and once per connect.
 
 ### Site-side notes the contract depends on
 
-- Pre-existing 2FA inconsistencies (below) can ship independently; the
-  CLI just follows whichever challenge the site returns.
-- The `LoginRateLimiter` IP-key bug (every caller sees `127.0.0.1`
-  through the synthetic request) must be fixed before `login` is
-  exposed. The new endpoint uses the real request, so the fix is to
-  stop using `LoginRequest::create()` synthetically, not to touch the
-  CLI.
+- Nothing in the site's 2FA code has to change first. The pre-existing
+  inconsistencies listed in the recon are real but independent; the CLI
+  follows whichever challenge the site returns.
+- The two "must fix before exposing login" items from the original
+  contract were wrong and are withdrawn; see the corrections block
+  below.
 - No user-facing session or device revocation exists today. Worth a
   follow-up on the site, not required for the CLI.
 
 ---
+
+## Corrections to the recon (2026-09-02 site session)
+
+Read these before trusting anything in the recon below.
+
+1. **The site already has a JSON login + 2FA surface.** The passport
+   login widget's `POST /passport/` and `POST /passport/two-factor`
+   answer JSON when asked (`Accept: application/json` + `X-XSRF-TOKEN`),
+   run the full pipeline, and are covered by
+   `tests/Feature/Login/PassportTest.php`. Verified live on dev with a
+   fresh non-browser cookie jar. The recon's "the site has no JSON
+   login" was wrong; the MVP plan's version of that line is wrong too.
+   The `/api/v1` pair was still chosen because passport's JSON is an
+   undocumented contract for its own Alpine widget (Laravel's
+   `{message, errors}` shape, `redirect` semantics, 204 on 2FA success)
+   and can change without notice, while `/api/v1` is the documented,
+   OpenAPI-covered home. Until the pair ships, the passport routes are a
+   usable stand-in for end-to-end smoke tests.
+2. **The `LoginRateLimiter` IP-key bug is not a blocker.** It exists only
+   because `JwtManager::handlePost()` builds a synthetic `LoginRequest`
+   with no client IP. Any real route keys the limiter on the real
+   `$request->ip()`. The new endpoint is a real route, so nothing needs
+   fixing before it ships. The bug still applies to `POST /ngapps/jwt.php`
+   and goes away when that route is retired.
+3. **The `login_type` "Email only" gap is Ngapps-only.** The check lives
+   in `RedirectIfTwoFactorRequiredAction`, which every surface that runs
+   the 2FA step (account, passport, and the new API pair) goes through.
+   Site issue #3848 is about the ngapps pipeline skipping that action.
+4. **No `csrf` endpoint is needed.** See "Priming the jar" above.
+5. **The `LoginRequest` guest-only `authorize()`** stands; the contract
+   handles the resulting 403.
+6. **The `service-token` endpoint is the only shared surface** with NG
+   Chat and NG Radio. The login pair is a login surface (session
+   establishment), a different category from the SSO-handoff mint, and
+   the site already has three of those (account, passport, ngapps). The
+   new pair is the fourth, on the same pipeline; it does not add an auth
+   mechanism.
 
 ## Recon (August 2026)
 

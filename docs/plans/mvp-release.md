@@ -24,8 +24,11 @@ Since then the server and site moved and this repo did not:
 - The site's `POST /api/v1/auth/service-token` is live and the SPA no
   longer uses `GET /ngapps/jwt.php`. `jwt.php` deletion is an open item
   upstream. This client's only mint path goes through it.
-- The site has no JSON login. `POST /login` and `POST /login/two-factor`
-  are redirect-only.
+- The site's documented API had no login. The passport widget's
+  `POST /passport/` and `/passport/two-factor` do answer JSON, but as an
+  undocumented contract for the widget's own use; the site session chose
+  a documented `/api/v1` pair instead (see the corrections block in
+  `docs/site-login-endpoints.md`).
 - No CI on push or PR; only the tag-triggered release workflow.
 - Repo is private.
 
@@ -47,14 +50,18 @@ Windows best-effort with a README note. Repo goes public when the site
 login is live and end-to-end smoke passes.
 
 **Login.** Auto-prompt on first run when no credential is stored, plus
-explicit `ngchat login` and `ngchat logout`. Identifier is username or
-email. After the password the site either emails a code (no
-authenticator) or expects a TOTP code. Three wrong codes restart from
-the password step. No resend. Always `remember=true`. Passwordless
-email-only accounts are out of scope and get a clear message.
-`PasswordMinter`, the `-user` flag, and the `set-cookie` subcommand are
-deleted. `NGCHAT_NG_COOKIE` (full cookie header) stays as the dev and
-smoke override.
+explicit `ngchat login` and `ngchat logout`. The `identity` field takes
+username or email. After the password the site either emails a code (no
+authenticator) or expects a TOTP code; at the code prompt a six-character
+entry is sent as `code` and anything else as `recovery_code`, so TOTP
+backup codes work without a separate command. Three wrong codes restart
+from the password step. No resend; an emailed code lives one hour.
+Always `remember=true`. The site deliberately does not distinguish an
+"email only" account that typed its username from a wrong password, so
+the prompt's help text says to use the email address in that case
+rather than the CLI detecting it. `PasswordMinter`, the `-user` flag,
+and the `set-cookie` subcommand are deleted. `NGCHAT_NG_COOKIE` (full
+cookie header) stays as the dev and smoke override.
 
 **Persistence.** The keyring (or the `0600` file fallback) holds only
 the `ng_remember` value. The site session and `XSRF-TOKEN` cookies live
@@ -73,10 +80,18 @@ browser out of chat: one mint per `revalidate`, exponential backoff on
 reconnect, no other retries. Cookie-based auth skips the login pipeline,
 so hourly re-mints never trigger the new-IP email challenge.
 
-**Site contract first.** Three new endpoints under `/api/v1/auth/`,
-JSend, specified in `docs/site-login-endpoints.md`: `GET csrf`, `POST
-login`, `POST two-factor`. The CLI is built against `httptest` fakes
-from that contract while the site work runs in parallel.
+**Site contract first.** Two new endpoints under `/api/v1/auth/`,
+JSend, specified in `docs/site-login-endpoints.md`: `POST login` and
+`POST two-factor`. No CSRF route: a guest `GET /api/v1/auth/me` returns
+401 and sets the `XSRF-TOKEN` and session cookies, which is all the jar
+needs. The token rotates on every login step, so the CLI reads it from
+the jar immediately before each POST. Fail bodies are Laravel-shaped
+maps of field to a list of messages; the CLI prints the first message of
+a key it knows, else the first message of any key. The CLI is built
+against `httptest` fakes from that contract while the site work runs in
+parallel; the passport routes are a stand-in for humans testing the
+site, not for the CLI, since their shapes differ. Site-side plan:
+`newgrounds-site/docs/plans/api-v1-auth-login.md`.
 
 **UI.** User count in the status bar and `/who` listing names, mods
 marked, away users dimmed with their away message. Mention highlight
@@ -97,11 +112,12 @@ story. `CHANGELOG.md`.
 Tick as each item lands. A phase is done when its box and all children
 are ticked and `go vet ./... && go test -race ./...` passes.
 
-- [ ] **Phase 0 — contract**
-  - [ ] `docs/site-login-endpoints.md` carries the request and response
-        contract for `csrf`, `login`, `two-factor`, and the CLI's use of
-        `service-token`
-  - [ ] Site session opened from the brief (site repo, not here)
+- [x] **Phase 0 — contract**
+  - [x] `docs/site-login-endpoints.md` carries the request and response
+        contract for `login`, `two-factor`, jar priming, and the CLI's
+        use of `service-token`
+  - [x] Site session opened from the brief (site repo, not here);
+        contract revised after its review on 2026-09-02
 
 - [ ] **Phase 1 — protocol sync (ngchat-cli#1)**
   - [x] Port `Revalidate`, `Revalidated`, `UserUpdated` into
@@ -114,16 +130,20 @@ are ticked and `go vet ./... && go test -race ./...` passes.
   - [x] Tests: decode cases for the four names; a client test driving
         `revalidate` through a fake server, asserting `reauthenticate`
         goes out and no reconnect happens
-  - [ ] Live check with `cmd/smoke` against dev with the site's
+  - [x] Live check with `cmd/smoke` against dev with the site's
         `APP_JWT_CHAT_TTL` at ~90s: renewal with no socket drop
-  - [ ] Close ngchat-cli#1 and ngchat-cli#2
+        (2026-09-02)
+  - [ ] Push and close ngchat-cli#1 and ngchat-cli#2
 
 - [ ] **Phase 2 — login and re-mint (CLI side, against fakes)**
   - [ ] ADR 0003: service-token re-mint with a cookie jar, `jwt.php`
         removed; what the keyring holds and why; the 401 = signed-out
         rule
-  - [ ] `internal/auth`: cookie jar, `csrf` priming, `login` and
-        `two-factor` flow with the three-attempt rule, `ServiceTokenMinter`
+  - [ ] `internal/auth`: cookie jar primed by `GET auth/me`, `login`
+        and `two-factor` flow with the three-attempt rule and the
+        code/recovery-code split, `ServiceTokenMinter` reading
+        `XSRF-TOKEN` from the jar before every POST, JSend fail-map
+        parsing
   - [ ] Store holds only `ng_remember`; migration from the old
         full-header slot (delete it, prompt for login)
   - [ ] Delete `PasswordMinter`, `-user`, `set-cookie`; keep
@@ -132,8 +152,9 @@ are ticked and `go vet ./... && go test -race ./...` passes.
   - [ ] Signed-out handling: 401 on mint stops the client with a
         distinct error; the TUI exits with `run ngchat login`
   - [ ] Tests: `httptest` fakes for every JSend outcome (success,
-        2FA email, 2FA TOTP, bad credentials, lockout, undeliverable,
-        401 and 419 on service-token)
+        2FA email, 2FA TOTP, recovery code, bad credentials, lockout,
+        undeliverable, 403 on a stale challenge, XSRF rotation between
+        steps, 401 and 419 on service-token)
   - [ ] Live check with `cmd/smoke` once the site endpoints are on dev
 
 - [ ] **Phase 3 — UI**
