@@ -75,9 +75,13 @@ Three behaviors are load-bearing:
   already displayed, `Event.Gap` is set and the loss is surfaced, not
   papered over. The buffer arrives newest-first and is reversed on replay.
 - *Stop vs retry.* `stopError` marks final conditions (close reasons
-  `client close` / `server close` / `idle timeout`, kicks, hard auth
-  failures). `unauthorized` containing "expired"/"malformed" is *soft*:
-  re-mint and re-send `authenticate` on the same socket, up to 3 times.
+  `client close` / `server close` / `idle timeout`, the `kicked` and
+  `idleTimeout` frames themselves, hard auth failures). Before
+  `authenticated`, an `unauthorized` containing "expired"/"malformed" is
+  *soft*: re-mint and re-send `authenticate` on the same socket, up to 3
+  times. After `authenticated` it is never answered: it only precedes a
+  close, either token expiry (reason `token expired`, which reconnects)
+  or a rejected `reauthenticate`.
 
 Heartbeat pings every 5s; the server drops sockets silent for 15s, and the
 20s read timeout doubles as the dead-link watchdog.

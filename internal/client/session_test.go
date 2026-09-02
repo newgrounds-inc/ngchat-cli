@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,10 +18,12 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 )
 
-// countingMinter hands out numbered tokens and can be told to fail.
+// countingMinter hands out numbered tokens and can be told to fail or to
+// repeat the last token (a cached mint).
 type countingMinter struct {
-	calls atomic.Int32
-	fail  atomic.Bool
+	calls  atomic.Int32
+	fail   atomic.Bool
+	repeat atomic.Bool
 }
 
 func (m *countingMinter) Mint(context.Context) (string, error) {
@@ -27,17 +31,10 @@ func (m *countingMinter) Mint(context.Context) (string, error) {
 	if m.fail.Load() {
 		return "", errors.New("mint down")
 	}
-	return "tok" + string(rune('0'+n)), nil
-}
-
-// fakeServer scripts one socket: it walks the client through
-// authenticate → channelID → subscribed, then hands control to script,
-// which returns the close reason to end with. Pings are answered and
-// otherwise ignored so the heartbeat never confuses a script.
-type fakeServer struct {
-	t      *testing.T
-	script func(conn *websocket.Conn, next nextFn) string
-	url    string
+	if m.repeat.Load() && n > 1 {
+		n--
+	}
+	return "tok" + strconv.Itoa(int(n)), nil
 }
 
 // nextFn reads the next non-ping client frame, or nil once ctx is done
@@ -45,22 +42,46 @@ type fakeServer struct {
 // nothing arrives.
 type nextFn func(ctx context.Context) map[string]any
 
-func newFakeServer(t *testing.T, script func(*websocket.Conn,
-	nextFn) string) *fakeServer {
-	fs := &fakeServer{t: t, script: script}
+// script drives one connection after the standard handshake. attempt is
+// 1 for the first connection and climbs on each reconnect. It returns
+// the close reason to end with.
+type script func(conn *websocket.Conn, attempt int, next nextFn) string
+
+// fakeServer walks every connection through authenticate → channelID →
+// subscribed, then hands control to the script. Pings are answered and
+// otherwise hidden so the heartbeat never confuses a script.
+type fakeServer struct {
+	t        *testing.T
+	script   script
+	url      string
+	attempts atomic.Int32
+	wg       sync.WaitGroup
+}
+
+func newFakeServer(t *testing.T, s script) *fakeServer {
+	fs := &fakeServer{t: t, script: s}
 	srv := httptest.NewServer(http.HandlerFunc(fs.handle))
-	t.Cleanup(srv.Close)
+	// httptest.Server.Close does not wait for hijacked connections, so
+	// hold the test open until every handler (which may call t.Errorf)
+	// has returned.
+	t.Cleanup(func() {
+		srv.Close()
+		fs.wg.Wait()
+	})
 	fs.url = "ws" + strings.TrimPrefix(srv.URL, "http")
 	return fs
 }
 
 func (fs *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
+	fs.wg.Add(1)
+	defer fs.wg.Done()
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	attempt := int(fs.attempts.Add(1))
 
 	// A dedicated reader feeds frames through a channel so that next can
 	// give up on a deadline without touching the socket: cancelling a
@@ -115,13 +136,23 @@ func (fs *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	_ = send(ctx, conn, map[string]any{"name": "subscribed",
 		"channelID": 3, "messageBuffer": []any{}, "serverTime": 1})
 
-	reason := fs.script(conn, next)
+	reason := fs.script(conn, attempt, next)
 	conn.Close(websocket.StatusNormalClosure, reason)
 }
 
 func send(ctx context.Context, conn *websocket.Conn, v any) error {
 	data, _ := json.Marshal(v)
 	return conn.Write(ctx, websocket.MessageText, data)
+}
+
+// quietFor asserts that the client sends no frame within d.
+func quietFor(t *testing.T, next nextFn, d time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	if m := next(ctx); m != nil {
+		t.Errorf("client sent %v, want silence", m)
+	}
 }
 
 // runUntilStopped runs the client against the fake server and collects
@@ -136,6 +167,9 @@ func runUntilStopped(t *testing.T, fs *fakeServer, m *countingMinter) []Event {
 	for e := range c.Events() {
 		events = append(events, e)
 	}
+	if len(events) == 0 {
+		t.Fatal("client emitted no events")
+	}
 	return events
 }
 
@@ -149,11 +183,20 @@ func countState(events []Event, s State) int {
 	return n
 }
 
+func hasMsg[T any](events []Event) bool {
+	for _, e := range events {
+		if _, ok := e.Msg.(T); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRevalidateRenewsInPlace is the whole point of ngchat-cli#1: a
 // revalidate nudge produces exactly one reauthenticate with a fresh token,
 // the revalidated ack reaches the UI, and no reconnect happens.
 func TestRevalidateRenewsInPlace(t *testing.T) {
-	fs := newFakeServer(t, func(conn *websocket.Conn, next nextFn) string {
+	fs := newFakeServer(t, func(conn *websocket.Conn, _ int, next nextFn) string {
 		ctx := context.Background()
 		_ = send(ctx, conn, map[string]any{"name": "revalidate", "serverTime": 1})
 		m := next(ctx)
@@ -168,8 +211,6 @@ func TestRevalidateRenewsInPlace(t *testing.T) {
 		_ = send(ctx, conn, map[string]any{"name": "revalidated",
 			"isAdmin": false, "isChatMod": true, "isSiteMod": false,
 			"serverTime": 1})
-		// Give the client a moment to surface the ack before closing.
-		time.Sleep(50 * time.Millisecond)
 		return "server close"
 	})
 
@@ -201,44 +242,51 @@ func TestRevalidateRenewsInPlace(t *testing.T) {
 	}
 }
 
+// TestRevalidateIsAnsweredOnce: a second nudge while a renewal is in
+// flight, or inside the spacing window, must not mint again. The server
+// caps attempts per token and the site's limiter counts before auth.
+func TestRevalidateIsAnsweredOnce(t *testing.T) {
+	fs := newFakeServer(t, func(conn *websocket.Conn, _ int, next nextFn) string {
+		ctx := context.Background()
+		for range 3 {
+			_ = send(ctx, conn, map[string]any{"name": "revalidate", "serverTime": 1})
+		}
+		if m := next(ctx); m == nil || m["name"] != "reauthenticate" {
+			t.Errorf("got %v, want one reauthenticate", m)
+		}
+		quietFor(t, next, 200*time.Millisecond)
+		return "server close"
+	})
+
+	minter := &countingMinter{}
+	runUntilStopped(t, fs, minter)
+	if got := minter.calls.Load(); got != 2 {
+		t.Errorf("mint calls = %d, want 2 (connect + one renewal)", got)
+	}
+}
+
 // TestRevalidateMintFailureIsNotFatal: a failed re-mint must surface as an
 // event and leave the session running — the server's close timer still
 // arms the ordinary reconnect path.
 func TestRevalidateMintFailureIsNotFatal(t *testing.T) {
 	minter := &countingMinter{}
-	fs := newFakeServer(t, func(conn *websocket.Conn, next nextFn) string {
+	fs := newFakeServer(t, func(conn *websocket.Conn, _ int, next nextFn) string {
 		ctx := context.Background()
 		minter.fail.Store(true)
 		_ = send(ctx, conn, map[string]any{"name": "revalidate", "serverTime": 1})
-		// The client must not answer; prove the socket is still alive by
-		// pushing a chat line through it afterwards.
-		time.Sleep(50 * time.Millisecond)
+		quietFor(t, next, 200*time.Millisecond)
+		// Prove the socket is still alive by pushing a chat line through.
 		_ = send(ctx, conn, map[string]any{"name": "message", "id": 1,
 			"channelID": 3, "message": "still here", "username": "bob"})
-		quiet, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
-		defer cancel()
-		m := next(quiet)
-		if m != nil && m["name"] == "reauthenticate" {
-			t.Error("client sent reauthenticate despite a failed mint")
-		}
 		return "server close"
 	})
 
 	events := runUntilStopped(t, fs, minter)
 
-	var failed, gotMessage bool
-	for _, e := range events {
-		switch e.Msg.(type) {
-		case RenewalFailed:
-			failed = true
-		case protocol.Message:
-			gotMessage = true
-		}
-	}
-	if !failed {
+	if !hasMsg[RenewalFailed](events) {
 		t.Error("RenewalFailed event not emitted")
 	}
-	if !gotMessage {
+	if !hasMsg[protocol.Message](events) {
 		t.Error("session did not keep reading after the failed renewal")
 	}
 	if countState(events, StateReconnecting) != 0 {
@@ -246,7 +294,55 @@ func TestRevalidateMintFailureIsNotFatal(t *testing.T) {
 	}
 }
 
-// TestKickReasonAndIdleReason pin the stop-error text the UI shows.
+// TestRevalidateRefusesRepeatedToken: the server drops a socket whose
+// renewal token is not strictly newer, so a cached mint is withheld.
+func TestRevalidateRefusesRepeatedToken(t *testing.T) {
+	minter := &countingMinter{}
+	minter.repeat.Store(true)
+	fs := newFakeServer(t, func(conn *websocket.Conn, _ int, next nextFn) string {
+		_ = send(context.Background(), conn,
+			map[string]any{"name": "revalidate", "serverTime": 1})
+		quietFor(t, next, 200*time.Millisecond)
+		return "server close"
+	})
+
+	events := runUntilStopped(t, fs, minter)
+	if !hasMsg[RenewalFailed](events) {
+		t.Error("a repeated token should be reported as a failed renewal")
+	}
+}
+
+// TestExpiryReconnects pins the server's real expiry sequence: an
+// "unauthorized: jwt expired" frame, then a close with reason "token
+// expired". After authentication the client must not answer the frame
+// (authenticate would trip the already-authenticated guard) and must
+// reconnect on the close.
+func TestExpiryReconnects(t *testing.T) {
+	fs := newFakeServer(t, func(conn *websocket.Conn, attempt int, next nextFn) string {
+		if attempt > 1 {
+			return "server close"
+		}
+		_ = send(context.Background(), conn, map[string]any{
+			"name": "unauthorized", "message": "jwt expired", "serverTime": 1})
+		quietFor(t, next, 200*time.Millisecond)
+		return "token expired"
+	})
+
+	minter := &countingMinter{}
+	events := runUntilStopped(t, fs, minter)
+
+	if got := fs.attempts.Load(); got != 2 {
+		t.Errorf("connections = %d, want 2 (expiry then reconnect)", got)
+	}
+	if countState(events, StateReconnecting) != 1 {
+		t.Error("expected exactly one reconnecting event")
+	}
+	if got := minter.calls.Load(); got != 2 {
+		t.Errorf("mint calls = %d, want 2 (one per connection)", got)
+	}
+}
+
+// TestStopReasons pins the stop-error text the UI shows.
 func TestStopReasons(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -260,21 +356,22 @@ func TestStopReasons(t *testing.T) {
 		{"kicked without reason",
 			[]map[string]any{{"name": "kicked", "serverTime": 1}},
 			"server close", "kicked"},
-		{"idle timeout carries the server's explanation",
+		{"idle timeout is final on the frame, whatever the close says",
 			[]map[string]any{{"name": "idleTimeout",
 				"reason": "no activity for 24h", "serverTime": 1}},
-			"idle timeout", "idle timeout: no activity for 24h"},
+			"going away", "idle timeout: no activity for 24h"},
 		{"idle timeout close without a preceding frame",
 			nil, "idle timeout", "idle timeout"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fs := newFakeServer(t, func(conn *websocket.Conn, _ nextFn) string {
+			fs := newFakeServer(t, func(conn *websocket.Conn, _ int, next nextFn) string {
 				for _, f := range tc.frames {
 					_ = send(context.Background(), conn, f)
 				}
-				time.Sleep(50 * time.Millisecond)
+				// Let the frame reach the client before the close does.
+				quietFor(t, next, 50*time.Millisecond)
 				return tc.close
 			})
 			events := runUntilStopped(t, fs, &countingMinter{})

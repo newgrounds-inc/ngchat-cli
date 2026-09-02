@@ -74,11 +74,20 @@ const (
 	readTimeout    = 20 * time.Second
 	maxAuthRetries = 3
 	maxBackoff     = 30 * time.Second
-	// renewalMintTimeout bounds the re-mint done inline in the read loop
-	// on Revalidate. The heartbeat goroutine keeps the socket alive
-	// meanwhile, but inbound frames queue until the mint returns, so
-	// this stays well under the two-minute window the server allows.
-	renewalMintTimeout = 15 * time.Second
+	// mintTimeout bounds every re-mint done on the read goroutine. While
+	// a mint is in flight nothing reads the socket, so the 20s read
+	// timeout that doubles as the dead-link watchdog is suspended for
+	// this long; keeping it well under readTimeout keeps that window
+	// honest. The heartbeat goroutine still feeds the server's 15s
+	// silence deadline meanwhile.
+	mintTimeout = 8 * time.Second
+	// minRenewalSpacing rate-limits renewals a server could otherwise
+	// drive in a loop: the site's mint limiter is 10/min per user and
+	// counts before auth, so a runaway here locks the user's browser out
+	// of chat too. Ten seconds is 6/min, and far shorter than any real
+	// nudge cadence (the lead is two minutes; a short-TTL dev token nudges
+	// every TTL).
+	minRenewalSpacing = 10 * time.Second
 	// dedupeWindow bounds the remembered message IDs used to collapse
 	// reconnect backfill against what was already displayed.
 	dedupeWindow = 500
@@ -194,16 +203,18 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 	go c.heartbeat(sessionCtx)
 
 	authRetries := 0
-	idleReason := ""
+	authed := false
+	// One renewal in flight at a time, spaced by minRenewalSpacing: the
+	// server caps attempts per token (5) and the site's limiter counts
+	// before auth, so nudges are never answered in a loop.
+	renewalPending := false
+	var lastMint time.Time
 	for {
 		readCtx, cancelRead := context.WithTimeout(ctx, readTimeout)
 		_, data, err := conn.Read(readCtx)
 		cancelRead()
 		if err != nil {
 			if reason := closeReason(err); noReconnectReasons[reason] {
-				if reason == "idle timeout" && idleReason != "" {
-					reason += ": " + idleReason
-				}
 				return established, &stopError{reason: reason}
 			}
 			return established, err
@@ -211,6 +222,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 
 		switch msg := protocol.Decode(data).(type) {
 		case protocol.Authenticated:
+			authed = true
 			c.emit(ctx, Event{Msg: msg, State: StateOnline})
 			name := strings.ToLower(c.cfg.Channel)
 			if err := c.send(ctx, protocol.NewGetChannelID(name)); err != nil {
@@ -227,6 +239,15 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 			established = true
 			c.deliverBackfill(ctx, msg)
 		case protocol.Unauthorized:
+			if authed {
+				// After authentication this only precedes a server close:
+				// token expiry (reason "token expired", which reconnects)
+				// or a rejected reauthenticate. Re-sending authenticate
+				// would trip the already-authenticated guard, so let the
+				// close arrive and decide.
+				c.emit(ctx, Event{Msg: msg, State: StateOnline})
+				continue
+			}
 			soft := strings.Contains(msg.Message, "expired") ||
 				strings.Contains(msg.Message, "malformed")
 			if !soft || authRetries >= maxAuthRetries {
@@ -235,7 +256,9 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 				}
 			}
 			authRetries++
-			token, err := c.cfg.Minter.Mint(ctx)
+			mintCtx, cancelMint := context.WithTimeout(ctx, mintTimeout)
+			token, err = c.cfg.Minter.Mint(mintCtx)
+			cancelMint()
 			if err != nil {
 				return established, fmt.Errorf("re-minting chat JWT: %w", err)
 			}
@@ -253,16 +276,27 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 			}
 			return established, &stopError{reason: reason}
 		case protocol.IdleTimeout:
-			// The close frame that follows carries only "idle timeout";
-			// keep the server's explanation for the stop error.
-			idleReason = msg.Reason
+			// Final on the frame itself: the close that follows may not
+			// arrive cleanly, and reconnecting would only idle out again.
+			reason := "idle timeout"
+			if msg.Reason != "" {
+				reason += ": " + msg.Reason
+			}
+			return established, &stopError{reason: reason}
 		case protocol.Revalidate:
-			// Exactly one attempt per nudge. The server caps attempts per
-			// token and the site's mint limiter counts before auth, so a
-			// retry loop here would also lock the user's browser out.
-			mintCtx, cancelMint := context.WithTimeout(ctx, renewalMintTimeout)
-			token, err := c.cfg.Minter.Mint(mintCtx)
+			if renewalPending || time.Since(lastMint) < minRenewalSpacing {
+				continue
+			}
+			lastMint = time.Now()
+			mintCtx, cancelMint := context.WithTimeout(ctx, mintTimeout)
+			fresh, err := c.cfg.Minter.Mint(mintCtx)
 			cancelMint()
+			if err == nil && fresh == token {
+				// The server closes the socket on a token whose expiry is
+				// not strictly later than the one in force, so a cached
+				// mint is worse than no answer at all.
+				err = errors.New("mint returned the token already in force")
+			}
 			if err != nil {
 				c.emit(ctx, Event{
 					Msg:   RenewalFailed{Err: err},
@@ -270,9 +304,14 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 				})
 				continue
 			}
-			if err := c.send(ctx, protocol.NewReauthenticate(token)); err != nil {
+			if err := c.send(ctx, protocol.NewReauthenticate(fresh)); err != nil {
 				return established, err
 			}
+			token = fresh
+			renewalPending = true
+		case protocol.Revalidated:
+			renewalPending = false
+			c.emit(ctx, Event{Msg: msg, State: StateOnline})
 		case protocol.Pong, protocol.Unknown:
 			// Heartbeat replies and unrecognized frames are dropped;
 			// tolerating the latter is the drift policy (ADR 0002).

@@ -94,21 +94,23 @@ type TypingEvent struct {
 
 // UserJoined reports a user entering a channel.
 type UserJoined struct {
-	ChannelID   int    `json:"channelID"`
-	UserID      int    `json:"userID"`
-	Username    string `json:"username"`
-	IsAdmin     bool   `json:"isAdmin"`
-	IsChatMod   bool   `json:"isChatMod"`
-	IsAway      bool   `json:"isAway"`
-	AwayMessage string `json:"awayMessage"`
-	ServerTime  int64  `json:"serverTime"`
+	ChannelID      int    `json:"channelID"`
+	UserID         int    `json:"userID"`
+	Username       string `json:"username"`
+	IsAdmin        bool   `json:"isAdmin"`
+	IsChatMod      bool   `json:"isChatMod"`
+	IsAway         bool   `json:"isAway"`
+	AwayMessage    string `json:"awayMessage"`
+	AwayMessageRaw string `json:"awayMessageRaw"`
+	UserIcon       string `json:"userIcon"`
+	UserPageURL    string `json:"userPageURL"`
+	ServerTime     int64  `json:"serverTime"`
 }
 
 // UserUpdated is a silent roster patch: the same shape as UserJoined but
 // for a user already in the channel (a mid-session role or away change,
-// typically published by an in-place token renewal). It must not be
-// announced as a join, and an unknown username is ignored rather than
-// added.
+// typically published by an in-place token renewal). Consumers must not
+// announce it as a join; the UI's user list applies it as a patch.
 type UserUpdated UserJoined
 
 // UserLeft reports a user leaving a channel.
@@ -130,12 +132,14 @@ type Kicked struct {
 	ChannelID      int    `json:"channelID"`
 	KickedByUserID int    `json:"kickedByUserID"`
 	Reason         string `json:"reason"`
+	ServerTime     int64  `json:"serverTime"`
 }
 
 // IdleTimeout precedes a disconnect for 24h without chatting; the close
 // reason "idle timeout" must not trigger auto-reconnect.
 type IdleTimeout struct {
-	Reason string `json:"reason"`
+	Reason     string `json:"reason"`
+	ServerTime int64  `json:"serverTime"`
 }
 
 // Revalidate is the server's nudge shortly before the chat JWT's hard
@@ -171,88 +175,51 @@ func Decode(data []byte) any {
 	if err := json.Unmarshal(data, &env); err != nil {
 		return Unknown{}
 	}
-	as := func(v any) any {
-		if err := json.Unmarshal(data, v); err != nil {
-			return Unknown{Name: env.Name}
-		}
-		return v
-	}
 	switch env.Name {
 	case "authenticated":
-		return deref(as(&Authenticated{}))
+		return decodeAs[Authenticated](data, env.Name)
 	case "unauthorized":
-		return deref(as(&Unauthorized{}))
+		return decodeAs[Unauthorized](data, env.Name)
 	case "error":
-		return deref(as(&Error{}))
+		return decodeAs[Error](data, env.Name)
 	case "channelID":
-		return deref(as(&ChannelID{}))
+		return decodeAs[ChannelID](data, env.Name)
 	case "subscribed":
-		return deref(as(&Subscribed{}))
+		return decodeAs[Subscribed](data, env.Name)
 	case "unsubscribed":
-		return deref(as(&Unsubscribed{}))
+		return decodeAs[Unsubscribed](data, env.Name)
 	case "message", "meMessage", "slapMessage", "serverMessage",
 		"directMessage":
-		return deref(as(&Message{}))
+		return decodeAs[Message](data, env.Name)
 	case "typing":
-		return deref(as(&TypingEvent{}))
+		return decodeAs[TypingEvent](data, env.Name)
 	case "userJoined":
-		return deref(as(&UserJoined{}))
+		return decodeAs[UserJoined](data, env.Name)
 	case "userLeft":
-		return deref(as(&UserLeft{}))
+		return decodeAs[UserLeft](data, env.Name)
 	case "userUpdated":
-		return deref(as(&UserUpdated{}))
+		return decodeAs[UserUpdated](data, env.Name)
 	case "revalidate":
-		return deref(as(&Revalidate{}))
+		return decodeAs[Revalidate](data, env.Name)
 	case "revalidated":
-		return deref(as(&Revalidated{}))
+		return decodeAs[Revalidated](data, env.Name)
 	case "pong":
-		return deref(as(&Pong{}))
+		return decodeAs[Pong](data, env.Name)
 	case "kicked":
-		return deref(as(&Kicked{}))
+		return decodeAs[Kicked](data, env.Name)
 	case "idleTimeout":
-		return deref(as(&IdleTimeout{}))
+		return decodeAs[IdleTimeout](data, env.Name)
 	default:
 		return Unknown{Name: env.Name}
 	}
 }
 
-// deref unwraps the pointer produced by Decode's helper so consumers can
-// type-switch on values.
-func deref(v any) any {
-	switch t := v.(type) {
-	case *Authenticated:
-		return *t
-	case *Unauthorized:
-		return *t
-	case *Error:
-		return *t
-	case *ChannelID:
-		return *t
-	case *Subscribed:
-		return *t
-	case *Unsubscribed:
-		return *t
-	case *Message:
-		return *t
-	case *TypingEvent:
-		return *t
-	case *UserJoined:
-		return *t
-	case *UserLeft:
-		return *t
-	case *Pong:
-		return *t
-	case *Kicked:
-		return *t
-	case *IdleTimeout:
-		return *t
-	case *UserUpdated:
-		return *t
-	case *Revalidate:
-		return *t
-	case *Revalidated:
-		return *t
-	default:
-		return v
+// decodeAs returns a T by value so consumers can type-switch on values;
+// a payload that does not fit becomes Unknown, per the drift policy.
+func decodeAs[T any](data []byte, name string) any {
+	var v T
+	if err := json.Unmarshal(data, &v); err != nil {
+		return Unknown{Name: name}
 	}
+	return v
 }
