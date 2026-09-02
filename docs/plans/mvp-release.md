@@ -119,7 +119,7 @@ are ticked and `go vet ./... && go test -race ./...` passes.
   - [x] Site session opened from the brief (site repo, not here);
         contract revised after its review on 2026-09-02
 
-- [ ] **Phase 1 — protocol sync (ngchat-cli#1)**
+- [x] **Phase 1 — protocol sync (ngchat-cli#1)**
   - [x] Port `Revalidate`, `Revalidated`, `UserUpdated` into
         `internal/protocol/server.go`; `Reauthenticate` into `client.go`
   - [x] Client answers `revalidate` once: mint, send `reauthenticate`;
@@ -133,7 +133,7 @@ are ticked and `go vet ./... && go test -race ./...` passes.
   - [x] Live check with `cmd/smoke` against dev with the site's
         `APP_JWT_CHAT_TTL` at ~90s: renewal with no socket drop
         (2026-09-02)
-  - [ ] Push and close ngchat-cli#1 and ngchat-cli#2
+  - [x] Push and close ngchat-cli#1 and ngchat-cli#2
 
 - [ ] **Phase 2 — login and re-mint (CLI side, against fakes)**
   - [ ] ADR 0003: service-token re-mint with a cookie jar, `jwt.php`
