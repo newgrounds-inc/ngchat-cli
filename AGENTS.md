@@ -20,12 +20,16 @@ event summaries, never tokens or cookies:
 
 ```sh
 export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws
-export NGCHAT_JWT_URL=https://www.newgrounds-d.com/ngapps/jwt.php
+export NGCHAT_SITE_URL=https://www.newgrounds-d.com
 export NGCHAT_ROUTING_COOKIE='serverid=...'   # dev proxy routing, every request
-export SMOKE_NG_COOKIE='...'                  # NG session/remember cookie
+export SMOKE_NG_COOKIE='ng_remember=...'      # raw cookie header; optional
 export SMOKE_SECONDS=150                      # optional; default 15
 go run ./cmd/smoke
 ```
+
+Without `SMOKE_NG_COOKIE` the harness uses the remember cookie that
+`ngchat login` stored, which is how the login flow is verified end to
+end: `NGCHAT_SITE_URL=... ngchat login`, then `go run ./cmd/smoke`.
 
 To watch a token renewal, set `APP_JWT_CHAT_TTL` to 180 seconds on the
 dev site and run with `SMOKE_SECONDS=200`: expect a `revalidated` line
@@ -42,12 +46,21 @@ verifying protocol or auth changes; reserve `cmd/ngchat` for UI work.
 Four layers, each one package, with a channel as the only seam between
 network and UI.
 
-**`internal/auth` — credentials and chat JWTs.** `Minter` is a one-method
-interface with two implementations: `CookieMinter` (GET `jwt.php` with an
-NG cookie — the long-term path) and `PasswordMinter` (POST with
-username/password — interim, allowlisted bot accounts only). `Store`
-persists the NG remember cookie in the OS keyring, falling back to a
-`0600` JSON file. The account password is never persisted; see ADR 0001.
+**`internal/auth` — credentials, site login, chat JWTs.** `Site` wraps
+the site's `/api/v1/auth` routes with one in-memory cookie jar per run:
+`Login` and `TwoFactor` for the first run, `ServiceToken` for every mint
+after. Every POST reads `XSRF-TOKEN` from the jar right before sending
+because the site rotates it on each completed login step; a jar with no
+token primes itself with a guest `GET auth/me`, and a 419 re-primes and
+retries once. `Login` (the flow) owns the prompts: wrong credentials
+re-ask the password, three wrong codes or a stale challenge restart
+there, lockout and an undeliverable code exit with the site's message. A
+six-character code goes as `code`, anything else as `recovery_code`.
+`ServiceTokenMinter` is the `Minter` the client uses; a 401 from it is
+`ErrSignedOut`, which the client turns into a stop and the TUI into an
+exit with `run ngchat login`. `Store` persists only the `ng_remember`
+value (OS keyring, `0600` file fallback) and deletes the v0.1
+cookie-header slot on sight. See ADR 0001 and ADR 0003.
 
 **`internal/protocol` — hand-ported wire types.** The source of truth is
 the TypeScript Zod schemas in the private `ngchat` repo

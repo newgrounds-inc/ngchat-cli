@@ -136,22 +136,22 @@ are ticked and `go vet ./... && go test -race ./...` passes.
   - [x] Push and close ngchat-cli#1 and ngchat-cli#2
 
 - [ ] **Phase 2 — login and re-mint (CLI side, against fakes)**
-  - [ ] ADR 0003: service-token re-mint with a cookie jar, `jwt.php`
+  - [x] ADR 0003: service-token re-mint with a cookie jar, `jwt.php`
         removed; what the keyring holds and why; the 401 = signed-out
         rule
-  - [ ] `internal/auth`: cookie jar primed by `GET auth/me`, `login`
+  - [x] `internal/auth`: cookie jar primed by `GET auth/me`, `login`
         and `two-factor` flow with the three-attempt rule and the
         code/recovery-code split, `ServiceTokenMinter` reading
         `XSRF-TOKEN` from the jar before every POST, JSend fail-map
         parsing
-  - [ ] Store holds only `ng_remember`; migration from the old
+  - [x] Store holds only `ng_remember`; migration from the old
         full-header slot (delete it, prompt for login)
-  - [ ] Delete `PasswordMinter`, `-user`, `set-cookie`; keep
+  - [x] Delete `PasswordMinter`, `-user`, `set-cookie`; keep
         `NGCHAT_NG_COOKIE`
-  - [ ] `ngchat login` / `ngchat logout`; auto-prompt on first run
-  - [ ] Signed-out handling: 401 on mint stops the client with a
+  - [x] `ngchat login` / `ngchat logout`; auto-prompt on first run
+  - [x] Signed-out handling: 401 on mint stops the client with a
         distinct error; the TUI exits with `run ngchat login`
-  - [ ] Tests: `httptest` fakes for every JSend outcome (success,
+  - [x] Tests: `httptest` fakes for every JSend outcome (success,
         2FA email, 2FA TOTP, recovery code, bad credentials, lockout,
         undeliverable, 403 on a stale challenge, XSRF rotation between
         steps, 401 and 419 on service-token)

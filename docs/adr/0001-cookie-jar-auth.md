@@ -1,5 +1,10 @@
 # Auth: login once, keep the NG cookie, re-mint hourly via GET jwt.php
 
+Amended by ADR 0003: `jwt.php` is gone, the re-mint goes through
+`POST /api/v1/auth/service-token` with a per-run cookie jar, and the
+interim password and `set-cookie` paths are removed. The decision here
+(store the remember cookie, never the password) stands.
+
 The chat JWT lives 1 hour and the chat server hard-closes sockets when it
 lapses, so a CLI needs a durable credential to re-mint from. We store the
 site's remember cookie and re-mint through the existing cookie-authed

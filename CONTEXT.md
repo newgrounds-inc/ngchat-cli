@@ -11,14 +11,32 @@ connection. Presented as the first WebSocket message, not a header.
 _Avoid_: session token, API key
 
 **Remember Cookie**:
-The long-lived newgrounds.com credential the CLI stores to re-mint chat
-JWTs. The only secret ever persisted — never the account password.
-_Avoid_: password, login token
+The value of the site's 400-day `ng_remember` cookie, set by a
+`remember=true` login. The only secret ever persisted — never the
+account password, never the site session.
+_Avoid_: password, login token, session cookie
+
+**Cookie Jar**:
+The in-memory cookie store for one run: seeded with the remember cookie,
+then holding the site session and `XSRF-TOKEN` cookies that priming
+sets. Dies with the process.
+
+**Prime**:
+A guest `GET /api/v1/auth/me` whose only purpose is the session and CSRF
+cookies it sets; its 401 is expected. Once per run before the first
+POST, and again after a 419.
 
 **Re-mint**:
-Obtaining a fresh chat JWT from the site mid-session. Recurs hourly
-because the chat server hard-closes sockets when the JWT lapses.
+Obtaining a fresh chat JWT from the site with the cookie jar
+(`POST /api/v1/auth/service-token`). Once per connect and once per
+revalidate, never in a loop: the site's limiter counts before auth.
 _Avoid_: refresh, renew
+
+**Signed Out**:
+A 401 from the re-mint: the remember cookie no longer works because the
+password changed or `ngchat logout` ran. Final; the TUI exits and the
+user runs `ngchat login`.
+_Avoid_: expired, unauthorized
 
 **Revalidate**:
 The server's nudge two minutes before the hard-close deadline. The client

@@ -22,15 +22,19 @@ ngchat                    # join #general
 ngchat -channel random    # join another channel
 ```
 
-Login today (while the site's CLI login endpoints are in the works):
+The first run asks for your username or email, password, and a
+two-factor code if your account uses one (a TOTP recovery code works at
+the same prompt). `ngchat login` does the same on demand and `ngchat
+logout` clears it.
 
-- **Allowlisted bot accounts** get a username/password prompt.
-- **Everyone else**: log into newgrounds.com in a browser, then run
-  `ngchat set-cookie` and paste your cookie header. It's stored in your
-  OS keyring (or a `0600` file if no keyring is available) and used to
-  mint short-lived chat tokens. `ngchat logout` clears it.
+Only the site's long-lived remember cookie is stored, in your OS keyring
+(or a `0600` file if no keyring is available); it mints short-lived chat
+tokens for you. Your password is never written to disk. If the site
+refuses the cookie (you changed your password), ngchat exits and asks you
+to run `ngchat login` again.
 
-Your NG password is never written to disk.
+If your account is set to log in with email only, enter your email
+address at the first prompt.
 
 ## Terminal niceties
 
@@ -44,9 +48,11 @@ Against the NG dev/staging stack:
 
 ```sh
 export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws
-export NGCHAT_JWT_URL=https://www.newgrounds-d.com/ngapps/jwt.php
+export NGCHAT_SITE_URL=https://www.newgrounds-d.com
 export NGCHAT_ROUTING_COOKIE='serverid=...'   # dev proxy routing
 ```
+
+`NGCHAT_NG_COOKIE` (a raw cookie header) bypasses the stored login.
 
 Design notes live in [CONTEXT.md](CONTEXT.md) and [docs/adr/](docs/adr/).
 
