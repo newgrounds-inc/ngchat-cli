@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,5 +52,34 @@ func TestTermPrompterReadsLine(t *testing.T) {
 	got, err = p.Secret("password: ")
 	if err != nil || got != "hunter2" {
 		t.Errorf("Secret = %q, %v", got, err)
+	}
+}
+
+// TestDebugLogPathHonorsXDG pins the log under the state directory and
+// checks the file opens with a private mode.
+func TestDebugLogPathHonorsXDG(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	path, err := debugLogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(state, "ngchat", "debug.log"); path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+	f, err := openDebugLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %o, want 0600", info.Mode().Perm())
+	}
+	if !strings.HasPrefix(path, state) {
+		t.Errorf("path %q escaped the state directory", path)
 	}
 }

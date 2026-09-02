@@ -77,8 +77,9 @@ func main() {
 			fmt.Printf("authenticated as %s (userID %d, motd %q)\n",
 				msg.Username, msg.UserID, msg.MOTDText())
 		case protocol.Subscribed:
-			fmt.Printf("subscribed channelID=%d buffer=%d gap=%v\n",
-				msg.ChannelID, len(msg.MessageBuffer), e.Gap)
+			fmt.Printf("subscribed channelID=%d buffer=%d users=%d notices=%d gap=%v\n",
+				msg.ChannelID, len(msg.MessageBuffer), len(msg.UserList),
+				len(msg.Notifications), e.Gap)
 			if !sent {
 				sent = true
 				if err := c.SendChat("ngchat-cli smoke test — hello from Go"); err != nil {

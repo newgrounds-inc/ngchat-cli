@@ -7,8 +7,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -26,12 +29,17 @@ var version = "dev"
 const (
 	defaultWSURL   = "wss://chat.newgrounds.com/ws"
 	defaultSiteURL = "https://www.newgrounds.com"
-	signedOutHint  = "signed out (password changed, or logged out); " +
+	// channel is the one room this client joins. There is one channel on
+	// the server today; switching is out of scope for the MVP.
+	channel       = "general"
+	signedOutHint = "signed out (password changed, or logged out); " +
 		"run `ngchat login`"
 )
 
 func main() {
-	channel := flag.String("channel", "general", "channel to join")
+	quiet := flag.Bool("quiet", false, "no terminal bell on mentions and DMs")
+	debug := flag.Bool("debug", false,
+		"write redacted frames and state changes to the debug log")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Usage = usage
 	flag.Parse()
@@ -83,24 +91,112 @@ func main() {
 	if err := prepareSite(ctx, store, site); err != nil {
 		exitLogin(ctx, err)
 	}
+	if err := runChat(ctx, chatOptions{
+		wsURL: wsURL, routing: routing, site: site,
+		quiet: *quiet, debug: *debug,
+	}); err != nil {
+		fatal(err)
+	}
+}
+
+// chatOptions carries what runChat needs from the flags and environment.
+type chatOptions struct {
+	wsURL   string
+	routing string
+	site    *auth.Site
+	quiet   bool
+	debug   bool
+}
+
+// runChat runs the client and the TUI until one of them ends. It returns
+// the error for main to report rather than exiting itself, so the debug
+// log is closed and its path printed on every exit, including the
+// signed-out one a user is most likely to report.
+func runChat(ctx context.Context, opts chatOptions) error {
+	var logger *slog.Logger
+	if opts.debug {
+		path, err := debugLogPath()
+		if err != nil {
+			return err
+		}
+		f, err := openDebugLog(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		// Printed after the alt screen is gone so it is the last line on
+		// the terminal, where the user will look for it.
+		defer fmt.Fprintln(os.Stderr, "ngchat: debug log written to", path)
+		logger = slog.New(slog.NewTextHandler(f,
+			&slog.HandlerOptions{Level: slog.LevelDebug}))
+		logger.Info("ngchat start", "version", version, "ws", opts.wsURL)
+	}
 
 	chat := client.New(client.Config{
-		WSURL:   wsURL,
-		Channel: *channel,
-		Minter:  &auth.ServiceTokenMinter{Site: site},
-		Cookie:  routing,
+		WSURL:   opts.wsURL,
+		Channel: channel,
+		Minter:  &auth.ServiceTokenMinter{Site: opts.site},
+		Cookie:  opts.routing,
+		Log:     logger,
 	})
 	go chat.Run(ctx)
 
-	prog := tea.NewProgram(ui.New(chat, strings.ToLower(*channel)),
+	prog := tea.NewProgram(
+		ui.New(chat, ui.Options{Channel: channel, Quiet: opts.quiet}),
 		tea.WithAltScreen(), tea.WithContext(ctx))
 	final, err := prog.Run()
 	if err != nil && ctx.Err() == nil {
-		fatal(err)
+		return err
 	}
 	if m, ok := final.(ui.Model); ok && m.SignedOut() {
-		fatal(errors.New(signedOutHint))
+		return errors.New(signedOutHint)
 	}
+	return nil
+}
+
+// debugLogPath is the fixed location of the -debug log: the platform's
+// per-user state directory, so it is never in the working directory a
+// user might commit or share by accident. The path is fixed rather than
+// per-run so a bug report can name it without a directory listing.
+func debugLogPath() (string, error) {
+	var base string
+	switch {
+	case os.Getenv("XDG_STATE_HOME") != "":
+		base = os.Getenv("XDG_STATE_HOME")
+	case runtime.GOOS == "darwin":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, "Library", "Logs")
+	case runtime.GOOS == "windows":
+		dir, err := os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
+		base = dir
+	default:
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "ngchat", "debug.log"), nil
+}
+
+// openDebugLog truncates and opens the log at path, creating its
+// directory. Mode 0600: frames are redacted but chat text is still the
+// user's private conversation.
+func openDebugLog(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("debug log: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("debug log: %w", err)
+	}
+	return f, nil
 }
 
 // newSite builds the site client for the run, seeding the dev proxy
@@ -254,7 +350,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `ngchat — Newgrounds Chat in your terminal
 
 usage:
-  ngchat [flags]              connect and chat (prompts for login the first time)
+  ngchat [flags]              join #general (prompts for login the first time)
   ngchat login                log in and store the remember cookie
   ngchat logout               clear stored credentials
 

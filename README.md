@@ -18,8 +18,9 @@ go install github.com/newgrounds-inc/ngchat-cli/cmd/ngchat@latest
 ## Use
 
 ```sh
-ngchat                    # join #general
-ngchat -channel random    # join another channel
+ngchat            # join #general
+ngchat -quiet     # same, without the terminal bell on mentions and DMs
+ngchat -debug     # also write redacted frames to a log; path printed on exit
 ```
 
 The first run asks for your username or email, password, and a
@@ -48,9 +49,14 @@ to go back.
 
 ## Terminal niceties
 
-- `ctrl+s` reveals spoilers, `pgup/pgdn` scrolls, `ctrl+c` quits.
-- Slash commands (`/me`, `/slap`, `/dm`, `/roll`, ...) work — the server
-  parses them.
+- `ctrl+s` reveals spoilers, `ctrl+t` toggles timestamps, `pgup/pgdn`
+  scrolls, `ctrl+c` quits.
+- `/who` lists who is in the channel (mods marked `@`, away users
+  dimmed). Every other slash command (`/me`, `/slap`, `/dm`, `/roll`,
+  ...) goes to the server, which parses them.
+- Mentions and DMs are highlighted and ring the terminal bell; `-quiet`
+  keeps the highlight and drops the bell.
+- Links are clickable in terminals that support OSC 8 hyperlinks.
 
 ## Development
 

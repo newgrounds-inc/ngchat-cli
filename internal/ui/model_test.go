@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"regexp"
@@ -15,13 +16,13 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 )
 
-var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\`)
 
 func plain(s string) string { return ansi.ReplaceAllString(s, "") }
 
 // newModel builds a Model with no chat client; the tests here never send, and
 // the transcript renders lazily so no viewport is needed.
-func newModel() Model { return New(nil, "general") }
+func newModel() Model { return New(nil, Options{Channel: "general"}) }
 
 func TestPushMessageClassifiesVariants(t *testing.T) {
 	tests := []struct {
@@ -41,7 +42,7 @@ func TestPushMessageClassifiesVariants(t *testing.T) {
 			m := newModel()
 			m.pushMessage(protocol.Message{
 				Name: tc.wireName, Username: "bob", Message: "hi",
-			})
+			}, false)
 			if len(m.items) != 1 {
 				t.Fatalf("got %d items, want 1", len(m.items))
 			}
@@ -59,7 +60,7 @@ func TestSpoilerToggle(t *testing.T) {
 	m.pushMessage(protocol.Message{
 		Name: "message", Username: "bob",
 		Message: "the butler did it", IsSpoiler: true,
-	})
+	}, false)
 
 	hidden := plain(m.renderItem(m.items[0]))
 	if strings.Contains(hidden, "butler") {
@@ -81,19 +82,19 @@ func TestRenderItemFormatsSpeaker(t *testing.T) {
 	m.self = "me"
 
 	m.pushMessage(protocol.Message{Name: "message", Username: "bob",
-		Message: "hi"})
+		Message: "hi"}, false)
 	if got := plain(m.renderItem(m.items[0])); got != "<bob> hi" {
 		t.Errorf("chat row = %q", got)
 	}
 
 	m.pushMessage(protocol.Message{Name: "directMessage", Username: "bob",
-		Message: "psst"})
+		Message: "psst"}, false)
 	if got := plain(m.renderItem(m.items[1])); !strings.HasPrefix(got, "[DM] ") {
 		t.Errorf("dm row = %q, want a [DM] prefix", got)
 	}
 
 	m.pushMessage(protocol.Message{Name: "meMessage", Username: "bob",
-		Message: "waves"})
+		Message: "waves"}, false)
 	if got := plain(m.renderItem(m.items[2])); got != "* bob waves" {
 		t.Errorf("me row = %q", got)
 	}
@@ -104,7 +105,7 @@ func TestRenderItemFormatsSpeaker(t *testing.T) {
 func TestRenderItemConvertsHTML(t *testing.T) {
 	m := newModel()
 	m.pushMessage(protocol.Message{Name: "message", Username: "bob",
-		Message: `say <strong>hi</strong> to <a href="https://x.test">x</a>`})
+		Message: `say <strong>hi</strong> to <a href="https://x.test">x</a>`}, false)
 
 	got := plain(m.renderItem(m.items[0]))
 	if strings.Contains(got, "<strong>") {
@@ -229,7 +230,7 @@ func TestTypingExpiry(t *testing.T) {
 // rather than sitting on a "disconnected" status bar the user cannot act
 // on from inside the TUI.
 func TestSignedOutQuits(t *testing.T) {
-	m := New(nil, "general")
+	m := newModel()
 	next, cmd := m.Update(client.Event{State: client.StateStopped,
 		Err: fmt.Errorf("signed out: %w", auth.ErrSignedOut)})
 	if !next.(Model).SignedOut() {
@@ -243,7 +244,7 @@ func TestSignedOutQuits(t *testing.T) {
 	}
 
 	// Any other stop keeps the screen up with the reason visible.
-	m = New(nil, "general")
+	m = newModel()
 	m.handleEvent(client.Event{State: client.StateStopped,
 		Err: errors.New("kicked")})
 	if m.SignedOut() {
@@ -251,5 +252,217 @@ func TestSignedOutQuits(t *testing.T) {
 	}
 	if plain(m.stateLabel()) != "disconnected: kicked" {
 		t.Errorf("status = %q", m.stateLabel())
+	}
+}
+
+func joined(id int, name string, mod bool) client.Event {
+	return client.Event{Msg: protocol.UserJoined{UserID: id, Username: name,
+		IsChatMod: mod, ServerTime: 1}}
+}
+
+// TestRosterFollowsPresence: Subscribed seeds the list, joins and leaves
+// patch it, userUpdated patches silently, and away flags the entry.
+func TestRosterFollowsPresence(t *testing.T) {
+	m := newModel()
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 1, Username: "ann"}, {UserID: 2, Username: "bob", IsChatMod: true},
+	}}})
+	if len(m.users) != 2 {
+		t.Fatalf("users after subscribe = %d, want 2", len(m.users))
+	}
+	m.handleEvent(joined(3, "carol", false))
+	m.handleEvent(client.Event{Msg: protocol.UserLeft{UserID: 1, Username: "ann"}})
+	rows := len(m.items)
+	m.handleEvent(client.Event{Msg: protocol.UserUpdated{UserID: 3, Username: "carol",
+		IsChatMod: true}})
+	if len(m.items) != rows {
+		t.Errorf("userUpdated pushed a row; it must be silent")
+	}
+	if !m.users[3].IsChatMod {
+		t.Error("userUpdated did not patch the roster")
+	}
+	m.handleEvent(client.Event{Msg: protocol.Away{UserID: 2, Username: "bob",
+		IsAway: true, AwayMessage: "<i>lunch</i>", ServerTime: 2}})
+	if !m.users[2].IsAway || m.users[2].AwayMessage != "<i>lunch</i>" {
+		t.Errorf("away did not patch bob: %+v", m.users[2])
+	}
+	last := plain(m.renderItem(m.items[len(m.items)-1]))
+	if last != "bob is away: lunch" {
+		t.Errorf("away row = %q", last)
+	}
+	m.handleEvent(client.Event{Msg: protocol.Away{UserID: 2, Username: "bob"}})
+	if m.users[2].IsAway {
+		t.Error("coming back did not clear the away flag")
+	}
+	if last := plain(m.renderItem(m.items[len(m.items)-1])); last != "bob is back" {
+		t.Errorf("back row = %q", last)
+	}
+	// A fresh subscribe (reconnect) replaces the roster wholesale.
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 9, Username: "zed"}}}})
+	if len(m.users) != 1 || m.users[9].Username != "zed" {
+		t.Errorf("reconnect roster = %+v", m.users)
+	}
+}
+
+func TestWhoListsSortedWithMarks(t *testing.T) {
+	m := newModel()
+	if got := plain(m.whoText()); got != "no user list yet" {
+		t.Errorf("empty who = %q", got)
+	}
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 1, Username: "Zed"},
+		{UserID: 2, Username: "ann", IsChatMod: true},
+		{UserID: 3, Username: "bob", IsAway: true, AwayMessage: "<b>brb</b>"},
+		{UserID: 4, Username: "cy", IsAway: true},
+	}}})
+	want := "4 users: @ann, bob (away: brb), cy (away), Zed"
+	if got := plain(m.whoText()); got != want {
+		t.Errorf("who = %q, want %q", got, want)
+	}
+	if !isWho("/WHO") || isWho("/whois bob") || isWho("who") {
+		t.Error("isWho should match exactly /who, case-insensitively")
+	}
+}
+
+func TestStatusBarCountsUsers(t *testing.T) {
+	m := newModel()
+	m.layout(80, 24)
+	m.handleEvent(client.Event{State: client.StateOnline,
+		Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{{UserID: 1, Username: "ann"}}}})
+	if v := plain(m.View()); !strings.Contains(v, "1 user") || strings.Contains(v, "1 users") {
+		t.Errorf("view = %q, want a singular user count", v)
+	}
+	m.handleEvent(joined(2, "bob", false))
+	if v := plain(m.View()); !strings.Contains(v, "2 users") {
+		t.Errorf("view = %q, want 2 users", v)
+	}
+}
+
+// TestMentionRingsBell: a live mention or DM to self rings once and is
+// highlighted; a backfilled one is highlighted but silent, self never
+// counts, and -quiet silences everything.
+func TestMentionRingsBell(t *testing.T) {
+	m := newModel()
+	m.self = "Me"
+	var bell bytes.Buffer
+	m.bell = &bell
+
+	// The wire shape: lowercased, "@" kept (server url-processor.ts).
+	m.handleEvent(client.Event{Msg: protocol.Message{Name: "message",
+		Username: "bob", Message: "hi", Mentions: []string{"@me"}}})
+	if bell.String() != "\a" {
+		t.Errorf("bell = %q, want one BEL for a mention", bell.String())
+	}
+	if !m.items[0].mention {
+		t.Error("mention row not flagged")
+	}
+	bell.Reset()
+	m.handleEvent(client.Event{Msg: protocol.Message{Name: "directMessage",
+		Username: "bob", Message: "psst"}})
+	if bell.String() != "\a" {
+		t.Errorf("bell = %q, want one BEL for a DM", bell.String())
+	}
+	bell.Reset()
+	m.handleEvent(client.Event{Backfill: true, Msg: protocol.Message{Name: "message",
+		Username: "bob", Message: "old", Mentions: []string{"@me"}}})
+	if bell.Len() != 0 {
+		t.Error("a backfilled mention must not ring")
+	}
+	if !m.items[2].mention {
+		t.Error("a backfilled mention should still be highlighted")
+	}
+	m.handleEvent(client.Event{Msg: protocol.Message{Name: "directMessage",
+		Username: "Me", Message: "echo of my own dm"}})
+	m.handleEvent(client.Event{Msg: protocol.Message{Name: "message",
+		Username: "bob", Message: "unrelated", Mentions: []string{"@!me", "@meh"}}})
+	if bell.Len() != 0 || m.items[3].mention || m.items[4].mention {
+		t.Error("self echo, group mentions and other names must neither ring nor highlight")
+	}
+
+	m.quiet = true
+	m.handleEvent(client.Event{Msg: protocol.Message{Name: "directMessage",
+		Username: "bob", Message: "psst"}})
+	if bell.Len() != 0 {
+		t.Error("-quiet must silence the bell")
+	}
+	if !m.items[5].mention {
+		t.Error("-quiet must keep the highlight")
+	}
+}
+
+func TestTimestampToggle(t *testing.T) {
+	m := newModel()
+	at := time.Date(2026, 9, 2, 13, 5, 0, 0, time.Local)
+	m.handleEvent(client.Event{Msg: protocol.Message{Name: "message",
+		Username: "bob", Message: "hi", ServerTime: at.UnixMilli()}})
+	if got := plain(m.renderItem(m.items[0])); got != "<bob> hi" {
+		t.Errorf("row without times = %q", got)
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	m = next.(Model)
+	if got := plain(m.renderItem(m.items[0])); got != "13:05 <bob> hi" {
+		t.Errorf("row with times = %q", got)
+	}
+}
+
+// TestEscDoesNotQuit: esc used to end the program, which is far too easy
+// to hit by reflex from a modal editor.
+func TestEscDoesNotQuit(t *testing.T) {
+	m := newModel()
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc}); cmd != nil {
+		if _, quit := cmd().(tea.QuitMsg); quit {
+			t.Error("esc produced tea.Quit")
+		}
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c should still quit")
+	}
+	if _, quit := cmd().(tea.QuitMsg); !quit {
+		t.Error("ctrl+c did not produce tea.Quit")
+	}
+}
+
+func TestTranscriptCap(t *testing.T) {
+	m := newModel()
+	for i := 0; i < maxItems+50; i++ {
+		m.push(item{kind: "event", text: fmt.Sprint(i)})
+	}
+	if len(m.items) != maxItems {
+		t.Fatalf("items = %d, want %d", len(m.items), maxItems)
+	}
+	if m.items[0].text != "50" {
+		t.Errorf("oldest kept = %q, want the 51st pushed", m.items[0].text)
+	}
+}
+
+// TestNoticesShownOncePerRun: the server resends its whole away-inbox on
+// every subscribe, so only the first one replays it, newest maxNotices
+// rows, oldest first.
+func TestNoticesShownOncePerRun(t *testing.T) {
+	m := newModel()
+	var notes []protocol.Notification
+	for i := 0; i < maxNotices+5; i++ {
+		notes = append(notes, protocol.Notification{
+			Username: "ann", MessageType: "message",
+			Message: fmt.Sprintf("n%d", i), ServerTime: int64(1000 - i)})
+	}
+	notes[0].MessageType = "modDirectMessage"
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{Notifications: notes}})
+	if len(m.items) != maxNotices {
+		t.Fatalf("rows = %d, want %d", len(m.items), maxNotices)
+	}
+	first := plain(m.renderItem(m.items[0]))
+	last := plain(m.renderItem(m.items[maxNotices-1]))
+	if first != "while you were away · ann: n9" {
+		t.Errorf("first row = %q, want the oldest of the newest ten", first)
+	}
+	if last != "while you were away · [DM] ann: n0" {
+		t.Errorf("last row = %q", last)
+	}
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{Notifications: notes}})
+	if len(m.items) != maxNotices {
+		t.Errorf("a reconnect replayed the inbox again: %d rows", len(m.items))
 	}
 }
