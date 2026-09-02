@@ -73,6 +73,10 @@ type fakeServer struct {
 	// frame carrying this message and a reasonless close, the way the
 	// server's entry gates (supporter, age, e-mail) refuse a user.
 	deny string
+	// denySubscribe, when set, answers subscribe with an unauthorized
+	// frame carrying the channel ID and this message and leaves the
+	// socket open, the way a channel ban is refused.
+	denySubscribe string
 }
 
 func newFakeServer(t *testing.T, s script) *fakeServer {
@@ -154,6 +158,13 @@ func (fs *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		"channelID": 3, "channelName": "general", "serverTime": 1})
 	if m := next(ctx); m == nil || m["name"] != "subscribe" {
 		fs.t.Errorf("frame = %v, want subscribe", m)
+		return
+	}
+	if fs.denySubscribe != "" {
+		_ = send(ctx, conn, map[string]any{"name": "unauthorized",
+			"channelID": 3, "message": fs.denySubscribe, "serverTime": 1})
+		// The server leaves the socket open; the client must decide.
+		quietFor(fs.t, next, 300*time.Millisecond)
 		return
 	}
 	_ = send(ctx, conn, map[string]any{"name": "subscribed",
@@ -559,5 +570,26 @@ func TestBackfillDoneFollowsReplay(t *testing.T) {
 	}
 	if ids := msgIDs(events); len(ids) != 2 || ids[0] != 1 || ids[1] != 2 {
 		t.Errorf("replayed IDs = %v, want oldest first", ids)
+	}
+}
+
+// TestChannelBanStops: a subscribe refused with an unauthorized carrying
+// the channel ID is final even though the socket stays open, since
+// there is nothing else to join.
+func TestChannelBanStops(t *testing.T) {
+	const notice = `You have been banned from this channel. Reason: "spam" You will be unbanned in 2 days.`
+	fs := newFakeServer(t, func(*websocket.Conn, int, nextFn) string {
+		t.Error("script ran; the client should have stopped at subscribe")
+		return "server close"
+	})
+	fs.denySubscribe = notice
+	events := runUntilStopped(t, fs, &countingMinter{})
+	last := events[len(events)-1]
+	var d *AccessDenied
+	if last.State != StateStopped || !errors.As(last.Err, &d) || d.Message != notice {
+		t.Errorf("last event = %+v, want a stop wrapping AccessDenied", last)
+	}
+	if got := fs.attempts.Load(); got != 1 {
+		t.Errorf("connections = %d, want 1 (no reconnect)", got)
 	}
 }

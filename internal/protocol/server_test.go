@@ -25,7 +25,15 @@ func TestDecodeKnownNames(t *testing.T) {
 			`{"name":"unauthorized","message":"jwt expired"}`,
 			func(t *testing.T, v any) {
 				u, ok := v.(Unauthorized)
-				if !ok || u.Message != "jwt expired" {
+				if !ok || u.Message != "jwt expired" || u.ChannelID != 0 {
+					t.Errorf("got %#v", v)
+				}
+			}},
+		{"unauthorized on subscribe",
+			`{"name":"unauthorized","channelID":3,"message":"You have been banned from this channel."}`,
+			func(t *testing.T, v any) {
+				u, ok := v.(Unauthorized)
+				if !ok || u.ChannelID != 3 {
 					t.Errorf("got %#v", v)
 				}
 			}},

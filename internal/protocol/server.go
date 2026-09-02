@@ -31,8 +31,12 @@ func (a Authenticated) MOTDText() string {
 
 // Unauthorized reports an auth failure. "jwt expired"/"jwt malformed" are
 // soft failures: re-mint and re-send Authenticate on the same socket.
+// ChannelID is set only when a subscribe was refused (channel ban, alt of
+// a banned account); the socket stays open in that case, so the client
+// must decide for itself that there is nothing left to do.
 type Unauthorized struct {
-	Message string `json:"message"`
+	ChannelID int    `json:"channelID"`
+	Message   string `json:"message"`
 }
 
 // Error is a generic request failure; RedirectChannel is set when a

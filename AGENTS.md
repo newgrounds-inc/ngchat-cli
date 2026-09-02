@@ -108,9 +108,13 @@ Three behaviors are load-bearing:
   (not a supporter, under 18, e-mail not validated, banned): the stop
   wraps `AccessDenied` carrying the server's HTML notice, which the TUI
   renders and prints on exit, the same way a signed-out run prints
-  `run ngchat login`. After `authenticated` it is never answered: it
-  only precedes a close, either token expiry (reason `token expired`,
-  which reconnects) or a rejected `reauthenticate`.
+  `run ngchat login`. After `authenticated`, an `unauthorized` with a
+  `channelID` is a refused subscribe (channel ban, alt of a banned
+  account): the server leaves the socket open, but with one channel
+  there is nothing left to join, so it is the same `AccessDenied` stop.
+  Any other post-auth `unauthorized` is never answered: it only precedes
+  a close, either token expiry (reason `token expired`, which
+  reconnects) or a rejected `reauthenticate`.
 
 Heartbeat pings every 5s; the server drops sockets silent for 15s, and the
 20s read timeout doubles as the dead-link watchdog.

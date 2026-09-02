@@ -59,11 +59,12 @@ type Event struct {
 type BackfillDone struct{}
 
 // AccessDenied is the cause of a stop when the server refuses the first
-// authenticate outright: not a supporter, under 18, e-mail not validated,
-// or banned. The site minted the token, so the account is not signed out;
-// nothing in the client can change the answer, so it is final. Message
-// is server-authored HTML (the supporter notice carries a link), so a
-// consumer renders it as markup.
+// authenticate outright (not a supporter, under 18, e-mail not validated,
+// banned from the server) or refuses the subscribe (banned from the
+// channel, alt of a banned account). The site minted the token, so the
+// account is not signed out; nothing in the client can change the
+// answer, so it is final. Message is server-authored HTML (the supporter
+// notice carries a link), so a consumer renders it as markup.
 type AccessDenied struct {
 	Message string
 }
@@ -337,6 +338,16 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 				"backfill", len(msg.MessageBuffer), "users", len(msg.UserList))
 			c.deliverBackfill(ctx, msg)
 		case protocol.Unauthorized:
+			if authed && msg.ChannelID != 0 {
+				// The subscribe was refused (channel ban, alt of a banned
+				// account). The socket stays open but there is one
+				// channel, so an open socket with nothing to join is a
+				// stop; the server's message is the whole answer.
+				return established, &stopError{
+					reason: "access denied",
+					err:    &AccessDenied{Message: msg.Message},
+				}
+			}
 			if authed {
 				// After authentication this only precedes a server close:
 				// token expiry (reason "token expired", which reconnects)
