@@ -60,6 +60,7 @@ type Model struct {
 	revealSpoilers bool
 	state          client.State
 	stopErr        error
+	retryErr       error // why the last session ended, while reconnecting
 	self           string
 	typing         map[string]typingState
 
@@ -164,8 +165,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleEvent folds a chat-client event into the transcript.
 func (m *Model) handleEvent(e client.Event) {
 	m.state = e.State
-	if e.Err != nil {
+	switch e.State {
+	case client.StateStopped:
 		m.stopErr = e.Err
+	case client.StateReconnecting:
+		m.retryErr = e.Err
 	}
 	if e.Gap {
 		m.push(item{kind: "gap"})
@@ -325,6 +329,9 @@ func (m Model) stateLabel() string {
 	case client.StateOnline:
 		return "online"
 	case client.StateReconnecting:
+		if m.retryErr != nil {
+			return "reconnecting… (" + m.retryErr.Error() + ")"
+		}
 		return "reconnecting…"
 	case client.StateStopped:
 		if m.stopErr != nil {

@@ -42,7 +42,8 @@ type Event struct {
 	// Gap is true when a reconnect's backfill did not overlap
 	// already-seen messages — history was lost and cannot be fetched.
 	Gap bool
-	// Err carries the terminal error when State is StateStopped.
+	// Err carries the terminal error when State is StateStopped, or the
+	// reason the last session ended when State is StateReconnecting.
 	Err error
 }
 
@@ -131,7 +132,7 @@ func (c *Client) Run(ctx context.Context) {
 		if established {
 			backoff = time.Second
 		}
-		c.emit(ctx, Event{State: StateReconnecting})
+		c.emit(ctx, Event{State: StateReconnecting, Err: err})
 		select {
 		case <-ctx.Done():
 			return
