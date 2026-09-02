@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +44,10 @@ type Event struct {
 	// Gap is true when a reconnect's backfill did not overlap
 	// already-seen messages — history was lost and cannot be fetched.
 	Gap bool
+	// Backfill marks a Msg replayed from the subscribe buffer rather than
+	// received live, so the UI can show it without treating it as news
+	// (no bell for an old mention on every reconnect).
+	Backfill bool
 	// Err carries the terminal error when State is StateStopped, or the
 	// reason the last session ended when State is StateReconnecting.
 	Err error
@@ -63,6 +69,10 @@ type Config struct {
 	// Cookie is an extra Cookie header sent on the WS upgrade (dev
 	// proxy routing).
 	Cookie string
+	// Log, when set, receives every frame (see Redact), state transition
+	// and mint outcome. Heartbeat pings and pongs are skipped so an hour
+	// of log stays readable. nil disables logging.
+	Log *slog.Logger
 }
 
 const (
@@ -99,6 +109,7 @@ const (
 type Client struct {
 	cfg    Config
 	events chan Event
+	log    *slog.Logger
 
 	mu        sync.Mutex
 	conn      *websocket.Conn
@@ -111,11 +122,50 @@ type Client struct {
 
 // New builds a Client; call Run to start it.
 func New(cfg Config) *Client {
-	return &Client{
+	c := &Client{
 		cfg:    cfg,
 		events: make(chan Event, 64),
 		seen:   make(map[int64]struct{}),
+		log:    cfg.Log,
 	}
+	if c.log == nil {
+		c.log = slog.New(slog.DiscardHandler)
+	}
+	return c
+}
+
+var (
+	tokenField = regexp.MustCompile(`("token"\s*:\s*")[^"]*(")`)
+	cookiePair = regexp.MustCompile(
+		`\b(ng_remember|newgrounds_session|XSRF-TOKEN|serverid)=[^;\s"]*`)
+)
+
+// logFrameLimit bounds one logged frame; a 5000-character message with
+// HTML is still recognizable at this size.
+const logFrameLimit = 1000
+
+// Redact masks the values that must never reach a log: chat JWTs in
+// authenticate and reauthenticate frames and the site's cookies in any
+// header or error text. Everything else passes through unchanged.
+func Redact(s string) string {
+	s = tokenField.ReplaceAllString(s, "${1}[redacted]${2}")
+	return cookiePair.ReplaceAllString(s, "${1}=[redacted]")
+}
+
+// logFrame writes one wire frame to the debug log, redacted and bounded.
+func (c *Client) logFrame(dir string, data []byte) {
+	if c.cfg.Log == nil {
+		return
+	}
+	name := protocol.FrameName(data)
+	if name == "ping" || name == "pong" {
+		return
+	}
+	frame := Redact(string(data))
+	if len(frame) > logFrameLimit {
+		frame = frame[:logFrameLimit] + "…"
+	}
+	c.log.Debug("frame", "dir", dir, "name", name, "frame", frame)
 }
 
 // Events returns the stream the UI should drain. It is closed when Run
@@ -137,12 +187,15 @@ func (c *Client) Run(ctx context.Context) {
 		}
 		var stop *stopError
 		if errors.As(err, &stop) {
+			c.log.Info("stopped", "reason", Redact(err.Error()))
 			c.emit(ctx, Event{State: StateStopped, Err: err})
 			return
 		}
 		if established {
 			backoff = time.Second
 		}
+		c.log.Info("reconnecting", "after", backoff,
+			"reason", Redact(fmt.Sprint(err)))
 		c.emit(ctx, Event{State: StateReconnecting, Err: err})
 		select {
 		case <-ctx.Done():
@@ -186,13 +239,16 @@ var noReconnectReasons = map[string]bool{
 // whether it got as far as a subscription (used to reset backoff).
 func (c *Client) session(ctx context.Context) (established bool, err error) {
 	c.emit(ctx, Event{State: StateConnecting})
+	c.log.Info("connecting", "url", c.cfg.WSURL)
 
 	mintCtx, cancelMint := context.WithTimeout(ctx, mintTimeout)
 	token, err := c.cfg.Minter.Mint(mintCtx)
 	cancelMint()
 	if err != nil {
+		c.log.Info("mint failed", "stage", "connect", "err", Redact(err.Error()))
 		return false, mintFailure("minting chat JWT", err)
 	}
+	c.log.Info("mint ok", "stage", "connect")
 
 	opts := &websocket.DialOptions{}
 	if c.cfg.Cookie != "" {
@@ -232,15 +288,20 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 		_, data, err := conn.Read(readCtx)
 		cancelRead()
 		if err != nil {
+			c.log.Info("read ended", "close_reason", closeReason(err),
+				"err", Redact(err.Error()))
 			if reason := closeReason(err); noReconnectReasons[reason] {
 				return established, &stopError{reason: reason}
 			}
 			return established, err
 		}
+		c.logFrame("in", data)
 
 		switch msg := protocol.Decode(data).(type) {
 		case protocol.Authenticated:
 			authed = true
+			c.log.Info("authenticated", "username", msg.Username,
+				"isChatMod", msg.IsChatMod, "isAdmin", msg.IsAdmin)
 			c.emit(ctx, Event{Msg: msg, State: StateOnline})
 			name := strings.ToLower(c.cfg.Channel)
 			if err := c.send(ctx, protocol.NewGetChannelID(name)); err != nil {
@@ -255,6 +316,8 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 			}
 		case protocol.Subscribed:
 			established = true
+			c.log.Info("subscribed", "channelID", msg.ChannelID,
+				"backfill", len(msg.MessageBuffer), "users", len(msg.UserList))
 			c.deliverBackfill(ctx, msg)
 		case protocol.Unauthorized:
 			if authed {
@@ -274,10 +337,14 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 				}
 			}
 			authRetries++
+			c.log.Info("soft unauthorized, re-minting", "attempt", authRetries,
+				"message", msg.Message)
 			retryCtx, cancelRetry := context.WithTimeout(ctx, mintTimeout)
 			retried, mintErr := c.cfg.Minter.Mint(retryCtx)
 			cancelRetry()
 			if mintErr != nil {
+				c.log.Info("mint failed", "stage", "auth retry",
+					"err", Redact(mintErr.Error()))
 				return established, mintFailure("re-minting chat JWT", mintErr)
 			}
 			token = retried
@@ -309,6 +376,9 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 			}
 			if len(renewals) >= maxRenewalsPerMinute ||
 				(renewalPending && now.Sub(lastMint) < minRenewalSpacing) {
+				c.log.Info("revalidate ignored: renewal budget",
+					"renewals_last_minute", len(renewals),
+					"pending", renewalPending)
 				continue
 			}
 			lastMint = now
@@ -329,12 +399,15 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 				return established, mintFailure("renewing chat JWT", mintErr)
 			}
 			if mintErr != nil {
+				c.log.Info("mint failed", "stage", "renewal",
+					"err", Redact(mintErr.Error()))
 				c.emit(ctx, Event{
 					Msg:   RenewalFailed{Err: mintErr},
 					State: StateOnline,
 				})
 				continue
 			}
+			c.log.Info("mint ok", "stage", "renewal")
 			if err := c.send(ctx, protocol.NewReauthenticate(fresh)); err != nil {
 				return established, err
 			}
@@ -342,6 +415,8 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 			renewalPending = true
 		case protocol.Revalidated:
 			renewalPending = false
+			c.log.Info("revalidated", "isChatMod", msg.IsChatMod,
+				"isAdmin", msg.IsAdmin)
 			c.emit(ctx, Event{Msg: msg, State: StateOnline})
 		case protocol.Pong, protocol.Unknown:
 			// Heartbeat replies and unrecognized frames are dropped;
@@ -377,7 +452,7 @@ func (c *Client) deliverBackfill(ctx context.Context, sub protocol.Subscribed) {
 	}
 	for _, msg := range fresh {
 		if c.markSeen(msg) {
-			c.emit(ctx, Event{Msg: msg, State: StateOnline})
+			c.emit(ctx, Event{Msg: msg, State: StateOnline, Backfill: true})
 		}
 	}
 }
@@ -454,6 +529,7 @@ func (c *Client) writeLocked(ctx context.Context, v any) error {
 	if err != nil {
 		return err
 	}
+	c.logFrame("out", data)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return c.conn.Write(ctx, websocket.MessageText, data)
