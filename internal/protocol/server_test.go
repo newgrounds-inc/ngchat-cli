@@ -46,10 +46,51 @@ func TestDecodeKnownNames(t *testing.T) {
 				}
 			}},
 		{"subscribed",
-			`{"name":"subscribed","channelID":3,"messageBuffer":[{"name":"message"},{"name":"message"}]}`,
+			`{"name":"subscribed","channelID":3,"channelName":"general","messageBuffer":[{"name":"message"},{"name":"message"}],` +
+				`"userList":[{"userID":7,"username":"bob","isChatMod":true,"isAway":true,"awayMessage":"<b>brb</b>","awayMessageRaw":"brb"}],` +
+				`"notifications":[{"message":"hi <b>you</b>","messageRaw":"hi you","messageType":"directMessage","serverTime":5,"userID":8,"username":"ann"}]}`,
 			func(t *testing.T, v any) {
 				s, ok := v.(Subscribed)
 				if !ok || s.ChannelID != 3 || len(s.MessageBuffer) != 2 {
+					t.Fatalf("got %#v", v)
+				}
+				if len(s.UserList) != 1 || s.UserList[0].Username != "bob" ||
+					!s.UserList[0].IsChatMod || !s.UserList[0].IsAway ||
+					s.UserList[0].AwayMessage != "<b>brb</b>" {
+					t.Errorf("userList = %#v", s.UserList)
+				}
+				if len(s.Notifications) != 1 ||
+					s.Notifications[0].MessageType != "directMessage" ||
+					s.Notifications[0].Username != "ann" ||
+					s.Notifications[0].ServerTime != 5 {
+					t.Errorf("notifications = %#v", s.Notifications)
+				}
+			}},
+		// The legacy shim sends the roster with no users and a DB-backed
+		// notification whose user columns are null; neither may turn the
+		// whole subscribe into Unknown.
+		{"subscribed with null user columns",
+			`{"name":"subscribed","channelID":3,"messageBuffer":[],"userList":[],"notifications":[{"message":"m","messageRaw":"m","messageType":"message","serverTime":1,"userID":null,"username":null}]}`,
+			func(t *testing.T, v any) {
+				s, ok := v.(Subscribed)
+				if !ok || len(s.Notifications) != 1 || s.Notifications[0].Username != "" {
+					t.Errorf("got %#v", v)
+				}
+			}},
+		{"away",
+			`{"name":"away","channelID":3,"userID":7,"username":"bob","isAway":true,"awayMessage":"<i>lunch</i>","awayMessageRaw":"lunch","isAdmin":false,"isChatMod":false,"serverTime":9}`,
+			func(t *testing.T, v any) {
+				a, ok := v.(Away)
+				if !ok || a.Username != "bob" || !a.IsAway ||
+					a.AwayMessage != "<i>lunch</i>" || a.UserID != 7 {
+					t.Errorf("got %#v", v)
+				}
+			}},
+		{"away back without message fields",
+			`{"name":"away","channelID":3,"userID":7,"username":"bob","isAway":false,"isAdmin":false,"isChatMod":false,"serverTime":9}`,
+			func(t *testing.T, v any) {
+				a, ok := v.(Away)
+				if !ok || a.IsAway || a.AwayMessage != "" {
 					t.Errorf("got %#v", v)
 				}
 			}},

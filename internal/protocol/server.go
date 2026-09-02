@@ -50,13 +50,62 @@ type ChannelID struct {
 
 // Subscribed answers Subscribe. MessageBuffer holds up to 25 recent
 // events (same envelopes as live ones — decode each with Decode); it is
-// the only history a client ever receives.
+// the only history a client ever receives. UserList is the full roster at
+// subscribe time, the baseline that UserJoined, UserLeft, UserUpdated and
+// Away then patch. Notifications are the server's persistent inbox of
+// mentions and DMs received while away, newest first, up to 100; the
+// server never clears it, so every subscribe carries the same rows again.
 type Subscribed struct {
 	ChannelID     int               `json:"channelID"`
+	ChannelName   string            `json:"channelName"`
 	MessageBuffer []json.RawMessage `json:"messageBuffer"`
-	UserList      json.RawMessage   `json:"userList"`
-	Notifications json.RawMessage   `json:"notifications"`
+	UserList      []ChannelUser     `json:"userList"`
+	Notifications []Notification    `json:"notifications"`
 	ServerTime    int64             `json:"serverTime"`
+}
+
+// ChannelUser is one roster entry. AwayMessage is server-rendered HTML,
+// like message bodies; AwayMessageRaw is the text the user typed.
+type ChannelUser struct {
+	UserID         int    `json:"userID"`
+	Username       string `json:"username"`
+	IsAdmin        bool   `json:"isAdmin"`
+	IsChatMod      bool   `json:"isChatMod"`
+	IsAway         bool   `json:"isAway"`
+	AwayMessage    string `json:"awayMessage"`
+	AwayMessageRaw string `json:"awayMessageRaw"`
+	UserIcon       string `json:"userIcon"`
+	UserPageURL    string `json:"userPageURL"`
+}
+
+// Notification is one inbox row from Subscribed: a mention or DM that
+// reached the user while away. MessageType is the server's notification
+// category, not the frame name: "message", "meMessage" (which also covers
+// a mention inside an away message), "directMessage", "modDirectMessage"
+// or "serverMessage". Message is rendered HTML.
+type Notification struct {
+	Message     string `json:"message"`
+	MessageRaw  string `json:"messageRaw"`
+	MessageType string `json:"messageType"`
+	ServerTime  int64  `json:"serverTime"`
+	UserID      int    `json:"userID"`
+	Username    string `json:"username"`
+}
+
+// Away reports a user going away (IsAway true, with a message) or coming
+// back (IsAway false). It patches the roster entry; it also appears in
+// the backfill buffer, where the DB copy omits isAway entirely, so
+// backfilled ones are ambiguous and are not replayed.
+type Away struct {
+	ChannelID      int    `json:"channelID"`
+	UserID         int    `json:"userID"`
+	Username       string `json:"username"`
+	IsAdmin        bool   `json:"isAdmin"`
+	IsChatMod      bool   `json:"isChatMod"`
+	IsAway         bool   `json:"isAway"`
+	AwayMessage    string `json:"awayMessage"`
+	AwayMessageRaw string `json:"awayMessageRaw"`
+	ServerTime     int64  `json:"serverTime"`
 }
 
 // Unsubscribed answers Unsubscribe.
@@ -168,6 +217,17 @@ type Unknown struct {
 	Name string
 }
 
+// FrameName returns the name discriminator of any frame, client or
+// server, or "" when the bytes are not a named frame. Loggers use it to
+// label frames without decoding them.
+func FrameName(data []byte) string {
+	var env envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return ""
+	}
+	return env.Name
+}
+
 // Decode maps a server frame to its typed struct. It never fails:
 // unrecognized names and undecodable payloads come back as Unknown.
 func Decode(data []byte) any {
@@ -199,6 +259,8 @@ func Decode(data []byte) any {
 		return decodeAs[UserLeft](data, env.Name)
 	case "userUpdated":
 		return decodeAs[UserUpdated](data, env.Name)
+	case "away":
+		return decodeAs[Away](data, env.Name)
 	case "revalidate":
 		return decodeAs[Revalidate](data, env.Name)
 	case "revalidated":
