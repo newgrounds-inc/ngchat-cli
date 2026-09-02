@@ -53,11 +53,24 @@ type link struct {
 	text strings.Builder
 }
 
+// Hyperlink wraps text in an OSC 8 hyperlink so terminals that support it
+// (kitty, WezTerm, Ghostty, iTerm2, recent GNOME and Windows terminals)
+// make it clickable. Terminals that do not simply show the text; the
+// sequence is zero-width for lipgloss, so wrapping and padding stay
+// correct either way. An empty url returns text unchanged.
+func Hyperlink(url, text string) string {
+	if url == "" {
+		return text
+	}
+	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+}
+
 // Text renders one message's HTML fragment to ANSI terminal text.
 //
-// Emote sprites (<span class="ng-emoticon-...">) become ":code:" — the
-// classes reference site CSS sprites, not image URLs, so until the v1.5
-// image pipeline lands the code itself is the most faithful rendering.
+// Links become OSC 8 hyperlinks (see Hyperlink). Emote sprites
+// (<span class="ng-emoticon-...">) become ":code:" — the classes reference
+// site CSS sprites, not image URLs, so until the image pipeline lands the
+// code itself is the most faithful rendering.
 func Text(fragment string) string {
 	tok := html.NewTokenizer(strings.NewReader(fragment))
 	var out strings.Builder
@@ -66,8 +79,9 @@ func Text(fragment string) string {
 
 	appendText := func(text string) {
 		if len(links) > 0 {
-			links[len(links)-1].text.WriteString(text)
-			out.WriteString(linkStyle.Render(text))
+			l := links[len(links)-1]
+			l.text.WriteString(text)
+			out.WriteString(Hyperlink(l.href, linkStyle.Render(text)))
 			return
 		}
 		out.WriteString(state.apply(text))
@@ -129,8 +143,13 @@ func Text(fragment string) string {
 				if len(links) > 0 {
 					l := links[len(links)-1]
 					links = links[:len(links)-1]
+					// The visible href stays even though the text is
+					// already a hyperlink: a terminal without OSC 8
+					// support would otherwise show a bare word with no
+					// way to reach the URL.
 					if l.href != "" && strings.TrimSpace(l.text.String()) != l.href {
-						out.WriteString(dimStyle.Render(" <" + l.href + ">"))
+						out.WriteString(Hyperlink(l.href,
+							dimStyle.Render(" <"+l.href+">")))
 					}
 				}
 			}

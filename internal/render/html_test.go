@@ -2,12 +2,14 @@ package render
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
-// ansi matches SGR escape sequences so assertions can compare plain text
-// regardless of the color profile lipgloss detects in the test environment.
-var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+// ansi matches SGR sequences and OSC 8 hyperlink markers so assertions can
+// compare plain text regardless of the color profile lipgloss detects in
+// the test environment.
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\`)
 
 func plain(s string) string { return ansi.ReplaceAllString(s, "") }
 
@@ -74,5 +76,21 @@ func TestTextStylesAreApplied(t *testing.T) {
 	}
 	if plain(got) != "bold" {
 		t.Errorf("styled output %q does not reduce to %q", got, "bold")
+	}
+}
+
+// TestTextHyperlinks checks the OSC 8 wrapping itself, which plain()
+// strips: the link text and the visible href both carry the URL.
+func TestTextHyperlinks(t *testing.T) {
+	got := Text(`<a href="https://example.com/x">click</a>`)
+	want := "\x1b]8;;https://example.com/x\x1b\\"
+	if strings.Count(got, want) != 2 {
+		t.Errorf("Text() = %q, want two hyperlink openers for %q", got, want)
+	}
+	if strings.Count(got, "\x1b]8;;\x1b\\") != 2 {
+		t.Errorf("Text() = %q, want two hyperlink closers", got)
+	}
+	if Hyperlink("", "x") != "x" {
+		t.Error("Hyperlink with no URL should return the text unchanged")
 	}
 }
