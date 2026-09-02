@@ -49,11 +49,15 @@ var kr = keyringBackend{
 // file under the user config dir on headless boxes without a keyring.
 type Store struct{}
 
-// Save stores a secret under key, preferring the keyring.
+// Save stores a secret under key, preferring the keyring. Whichever
+// backend takes the value, the other is cleared: Load prefers the
+// keyring, so a keyring write that fails while an older entry survives
+// would otherwise keep logging in as the previous account.
 func (Store) Save(key, value string) error {
 	if err := kr.set(keyringService, key, value); err == nil {
-		return nil
+		return fileDelete(key)
 	}
+	_ = kr.delete(keyringService, key)
 	return fileSave(key, value)
 }
 
@@ -70,12 +74,7 @@ func (Store) Load(key string) (string, error) {
 // error.
 func (Store) Delete(key string) error {
 	_ = kr.delete(keyringService, key)
-	m, path, err := fileRead()
-	if err != nil || m == nil {
-		return nil
-	}
-	delete(m, key)
-	return fileWrite(path, m)
+	return fileDelete(key)
 }
 
 // Migrate removes the v0.1 cookie-header slot. It reports whether one
@@ -143,6 +142,20 @@ func fileSave(key, value string) error {
 		"ngchat: no OS keyring available; credential stored in %s (0600)\n",
 		path)
 	return nil
+}
+
+// fileDelete drops key from the fallback file; a missing file or key is
+// not an error.
+func fileDelete(key string) error {
+	m, path, err := fileRead()
+	if err != nil || m == nil {
+		return nil
+	}
+	if _, ok := m[key]; !ok {
+		return nil
+	}
+	delete(m, key)
+	return fileWrite(path, m)
 }
 
 func fileLoad(key string) (string, error) {

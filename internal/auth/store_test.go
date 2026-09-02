@@ -227,3 +227,44 @@ func TestMigrateRemovesLegacyCookieHeader(t *testing.T) {
 		})
 	}
 }
+
+// TestSaveClearsTheOtherBackend is the two-accounts bug: Load prefers
+// the keyring, so a Save that lands in the file while an older keyring
+// entry survives (write failed, read still works) must remove that
+// entry, and a Save that lands in the keyring must drop a stale file
+// copy.
+func TestSaveClearsTheOtherBackend(t *testing.T) {
+	t.Run("keyring write fails, old entry lingers", func(t *testing.T) {
+		tempConfigDir(t)
+		m := memKeyring(t)
+		m[RememberKey] = "old-account"
+		saved := kr
+		t.Cleanup(func() { kr = saved })
+		kr.set = func(_, _, _ string) error { return errors.New("locked") }
+
+		var s Store
+		if err := s.Save(RememberKey, "new-account"); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		if got, _ := s.Load(RememberKey); got != "new-account" {
+			t.Errorf("Load = %q, want the account just saved", got)
+		}
+		if _, ok := m[RememberKey]; ok {
+			t.Error("stale keyring entry survived a file-backed Save")
+		}
+	})
+	t.Run("keyring write succeeds, stale file copy", func(t *testing.T) {
+		tempConfigDir(t)
+		if err := fileSave(RememberKey, "old-account"); err != nil {
+			t.Fatalf("fileSave: %v", err)
+		}
+		memKeyring(t)
+		var s Store
+		if err := s.Save(RememberKey, "new-account"); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		if _, err := fileLoad(RememberKey); !errors.Is(err, ErrNotFound) {
+			t.Errorf("stale file copy survived a keyring-backed Save: %v", err)
+		}
+	})
+}
