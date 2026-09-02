@@ -91,11 +91,13 @@ func TestDecodeKnownNames(t *testing.T) {
 				}
 			}},
 		{"userUpdated",
-			`{"name":"userUpdated","channelID":3,"username":"bob","isChatMod":true,"isAway":true,"awayMessage":"brb"}`,
+			`{"name":"userUpdated","channelID":3,"username":"bob","isChatMod":true,"isAway":true,"awayMessage":"brb","awayMessageRaw":"brb","userIcon":"i.png","userPageURL":"https://bob.newgrounds.com"}`,
 			func(t *testing.T, v any) {
 				u, ok := v.(UserUpdated)
 				if !ok || u.Username != "bob" || !u.IsChatMod || !u.IsAway ||
-					u.AwayMessage != "brb" {
+					u.AwayMessage != "brb" || u.AwayMessageRaw != "brb" ||
+					u.UserIcon != "i.png" ||
+					u.UserPageURL != "https://bob.newgrounds.com" {
 					t.Errorf("got %#v", v)
 				}
 			}},

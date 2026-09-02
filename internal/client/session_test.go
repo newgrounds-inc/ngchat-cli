@@ -18,16 +18,24 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 )
 
-// countingMinter hands out numbered tokens and can be told to fail or to
-// repeat the last token (a cached mint).
+// countingMinter hands out numbered tokens and can be told to fail, to
+// repeat the last token (a cached mint), or to take a while.
 type countingMinter struct {
 	calls  atomic.Int32
 	fail   atomic.Bool
 	repeat atomic.Bool
+	delay  time.Duration
 }
 
-func (m *countingMinter) Mint(context.Context) (string, error) {
+func (m *countingMinter) Mint(ctx context.Context) (string, error) {
 	n := m.calls.Add(1)
+	if m.delay > 0 {
+		select {
+		case <-time.After(m.delay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	if m.fail.Load() {
 		return "", errors.New("mint down")
 	}
@@ -242,26 +250,87 @@ func TestRevalidateRenewsInPlace(t *testing.T) {
 	}
 }
 
-// TestRevalidateIsAnsweredOnce: a second nudge while a renewal is in
-// flight, or inside the spacing window, must not mint again. The server
-// caps attempts per token and the site's limiter counts before auth.
-func TestRevalidateIsAnsweredOnce(t *testing.T) {
+// TestRevalidateIsAnsweredOnceUntilAcked: nudges that arrive while a
+// renewal is unacked must not mint again, but an acked renewal may be
+// followed immediately — a short-TTL token nudges right after every ack,
+// and the live check depends on chained renewals staying in place.
+func TestRevalidateIsAnsweredOnceUntilAcked(t *testing.T) {
+	nudge := map[string]any{"name": "revalidate", "serverTime": 1}
+	ack := map[string]any{"name": "revalidated", "isAdmin": false,
+		"isChatMod": false, "isSiteMod": false, "serverTime": 1}
 	fs := newFakeServer(t, func(conn *websocket.Conn, _ int, next nextFn) string {
 		ctx := context.Background()
 		for range 3 {
-			_ = send(ctx, conn, map[string]any{"name": "revalidate", "serverTime": 1})
+			_ = send(ctx, conn, nudge)
 		}
 		if m := next(ctx); m == nil || m["name"] != "reauthenticate" {
 			t.Errorf("got %v, want one reauthenticate", m)
 		}
+		quietFor(t, next, 200*time.Millisecond)
+
+		_ = send(ctx, conn, ack)
+		_ = send(ctx, conn, nudge)
+		if m := next(ctx); m == nil || m["token"] != "tok3" {
+			t.Errorf("after ack got %v, want a second renewal (tok3)", m)
+		}
+		return "server close"
+	})
+
+	minter := &countingMinter{}
+	runUntilStopped(t, fs, minter)
+	if got := minter.calls.Load(); got != 3 {
+		t.Errorf("mint calls = %d, want 3 (connect + two renewals)", got)
+	}
+}
+
+// TestRevalidateBudget caps renewals per minute even when every one is
+// acked, so a server nudging in a loop cannot drive the site's limiter.
+func TestRevalidateBudget(t *testing.T) {
+	nudge := map[string]any{"name": "revalidate", "serverTime": 1}
+	ack := map[string]any{"name": "revalidated", "isAdmin": false,
+		"isChatMod": false, "isSiteMod": false, "serverTime": 1}
+	fs := newFakeServer(t, func(conn *websocket.Conn, _ int, next nextFn) string {
+		ctx := context.Background()
+		for i := range maxRenewalsPerMinute {
+			_ = send(ctx, conn, nudge)
+			if m := next(ctx); m == nil || m["name"] != "reauthenticate" {
+				t.Errorf("renewal %d: got %v", i+1, m)
+			}
+			_ = send(ctx, conn, ack)
+		}
+		_ = send(ctx, conn, nudge)
 		quietFor(t, next, 200*time.Millisecond)
 		return "server close"
 	})
 
 	minter := &countingMinter{}
 	runUntilStopped(t, fs, minter)
-	if got := minter.calls.Load(); got != 2 {
-		t.Errorf("mint calls = %d, want 2 (connect + one renewal)", got)
+	if got := minter.calls.Load(); got != int32(1+maxRenewalsPerMinute) {
+		t.Errorf("mint calls = %d, want %d", got, 1+maxRenewalsPerMinute)
+	}
+}
+
+// TestSlowMintKeepsSession: the mint runs on the read goroutine, so a
+// slow one must delay frames, not lose them or drop the socket.
+func TestSlowMintKeepsSession(t *testing.T) {
+	fs := newFakeServer(t, func(conn *websocket.Conn, _ int, next nextFn) string {
+		ctx := context.Background()
+		_ = send(ctx, conn, map[string]any{"name": "revalidate", "serverTime": 1})
+		_ = send(ctx, conn, map[string]any{"name": "message", "id": 1,
+			"channelID": 3, "message": "queued behind the mint", "username": "bob"})
+		if m := next(ctx); m == nil || m["name"] != "reauthenticate" {
+			t.Errorf("got %v, want reauthenticate", m)
+		}
+		return "server close"
+	})
+
+	minter := &countingMinter{delay: 150 * time.Millisecond}
+	events := runUntilStopped(t, fs, minter)
+	if !hasMsg[protocol.Message](events) {
+		t.Error("frame sent during the mint was lost")
+	}
+	if countState(events, StateReconnecting) != 0 {
+		t.Error("slow mint must not cause a reconnect")
 	}
 }
 

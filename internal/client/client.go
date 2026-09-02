@@ -81,13 +81,15 @@ const (
 	// honest. The heartbeat goroutine still feeds the server's 15s
 	// silence deadline meanwhile.
 	mintTimeout = 8 * time.Second
-	// minRenewalSpacing rate-limits renewals a server could otherwise
-	// drive in a loop: the site's mint limiter is 10/min per user and
-	// counts before auth, so a runaway here locks the user's browser out
-	// of chat too. Ten seconds is 6/min, and far shorter than any real
-	// nudge cadence (the lead is two minutes; a short-TTL dev token nudges
-	// every TTL).
-	minRenewalSpacing = 10 * time.Second
+	// Renewal budget. The site's mint limiter is 10/min per user and
+	// counts before auth, so a client answering nudges in a loop locks
+	// the user's browser out of chat too. An acked renewal may be
+	// followed immediately (a short-TTL dev token nudges right after
+	// every ack); an unacked one waits minRenewalSpacing before another
+	// try; and maxRenewalsPerMinute caps both, matching the server's own
+	// per-token attempt limit.
+	minRenewalSpacing    = 10 * time.Second
+	maxRenewalsPerMinute = 5
 	// dedupeWindow bounds the remembered message IDs used to collapse
 	// reconnect backfill against what was already displayed.
 	dedupeWindow = 500
@@ -169,7 +171,9 @@ var noReconnectReasons = map[string]bool{
 func (c *Client) session(ctx context.Context) (established bool, err error) {
 	c.emit(ctx, Event{State: StateConnecting})
 
-	token, err := c.cfg.Minter.Mint(ctx)
+	mintCtx, cancelMint := context.WithTimeout(ctx, mintTimeout)
+	token, err := c.cfg.Minter.Mint(mintCtx)
+	cancelMint()
 	if err != nil {
 		return false, fmt.Errorf("minting chat JWT: %w", err)
 	}
@@ -204,11 +208,9 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 
 	authRetries := 0
 	authed := false
-	// One renewal in flight at a time, spaced by minRenewalSpacing: the
-	// server caps attempts per token (5) and the site's limiter counts
-	// before auth, so nudges are never answered in a loop.
 	renewalPending := false
 	var lastMint time.Time
+	var renewals []time.Time // mint times inside the last minute
 	for {
 		readCtx, cancelRead := context.WithTimeout(ctx, readTimeout)
 		_, data, err := conn.Read(readCtx)
@@ -256,12 +258,13 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 				}
 			}
 			authRetries++
-			mintCtx, cancelMint := context.WithTimeout(ctx, mintTimeout)
-			token, err = c.cfg.Minter.Mint(mintCtx)
-			cancelMint()
-			if err != nil {
-				return established, fmt.Errorf("re-minting chat JWT: %w", err)
+			retryCtx, cancelRetry := context.WithTimeout(ctx, mintTimeout)
+			retried, mintErr := c.cfg.Minter.Mint(retryCtx)
+			cancelRetry()
+			if mintErr != nil {
+				return established, fmt.Errorf("re-minting chat JWT: %w", mintErr)
 			}
+			token = retried
 			if err := c.send(ctx, protocol.NewAuthenticate(token)); err != nil {
 				return established, err
 			}
@@ -284,22 +287,28 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 			}
 			return established, &stopError{reason: reason}
 		case protocol.Revalidate:
-			if renewalPending || time.Since(lastMint) < minRenewalSpacing {
+			now := time.Now()
+			for len(renewals) > 0 && now.Sub(renewals[0]) > time.Minute {
+				renewals = renewals[1:]
+			}
+			if len(renewals) >= maxRenewalsPerMinute ||
+				(renewalPending && now.Sub(lastMint) < minRenewalSpacing) {
 				continue
 			}
-			lastMint = time.Now()
-			mintCtx, cancelMint := context.WithTimeout(ctx, mintTimeout)
-			fresh, err := c.cfg.Minter.Mint(mintCtx)
-			cancelMint()
-			if err == nil && fresh == token {
+			lastMint = now
+			renewals = append(renewals, now)
+			renewCtx, cancelRenew := context.WithTimeout(ctx, mintTimeout)
+			fresh, mintErr := c.cfg.Minter.Mint(renewCtx)
+			cancelRenew()
+			if mintErr == nil && fresh == token {
 				// The server closes the socket on a token whose expiry is
 				// not strictly later than the one in force, so a cached
 				// mint is worse than no answer at all.
-				err = errors.New("mint returned the token already in force")
+				mintErr = errors.New("mint returned the token already in force")
 			}
-			if err != nil {
+			if mintErr != nil {
 				c.emit(ctx, Event{
-					Msg:   RenewalFailed{Err: err},
+					Msg:   RenewalFailed{Err: mintErr},
 					State: StateOnline,
 				})
 				continue

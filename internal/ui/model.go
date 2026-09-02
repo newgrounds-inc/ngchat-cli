@@ -203,6 +203,11 @@ func (m *Model) handleEvent(e client.Event) {
 		m.push(item{kind: "event", text: eventStyle.Render(
 			"token renewal failed (" + msg.Err.Error() +
 				"); will reconnect when the current token expires")})
+	case protocol.Unauthorized:
+		// Only reaches the UI after authentication, right before the
+		// server closes the socket (expiry or a rejected renewal).
+		m.push(item{kind: "event",
+			text: eventStyle.Render(msg.Message)})
 	case protocol.Error:
 		m.push(item{kind: "event",
 			text: errorStyle.Render(msg.Message)})
