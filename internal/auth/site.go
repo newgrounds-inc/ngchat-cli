@@ -338,7 +338,14 @@ func (s *Site) do(ctx context.Context, method, path string, body, out any) error
 
 	var env jsend
 	_ = json.Unmarshal(raw, &env)
-	if resp.StatusCode/100 == 2 && env.Status == "success" {
+	if resp.StatusCode/100 == 2 {
+		if env.Status != "success" {
+			// A 2xx that is not JSend is not the API answering: a proxy
+			// page, or a redirect the client followed. Naming it beats
+			// reporting "OK" as a failure.
+			return fmt.Errorf("%s %s: unexpected non-JSON response (HTTP %d)",
+				method, path, resp.StatusCode)
+		}
 		if out != nil && len(env.Data) > 0 {
 			if err := json.Unmarshal(env.Data, out); err != nil {
 				return fmt.Errorf("%s %s: decoding data: %w", method, path, err)

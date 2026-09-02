@@ -580,6 +580,26 @@ func TestErrorsDoNotLeakSecrets(t *testing.T) {
 	}
 }
 
+// TestNonJSONSuccessIsNamed: a 2xx that is not JSend (a proxy page, a
+// followed redirect) must not read as "OK" or as a site fail.
+func TestNonJSONSuccessIsNamed(t *testing.T) {
+	fs := newFakeSite(t)
+	fs.token = func(int) (int, string) { return 200, "<html>proxy</html>" }
+	s := fs.site(t)
+	s.SetRemember(fakeRemember)
+	_, err := s.ServiceToken(context.Background(), ChatService)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var fail *FailError
+	if errors.As(err, &fail) {
+		t.Errorf("err is a FailError (%v); a non-JSON 2xx is not a site fail", err)
+	}
+	if !strings.Contains(err.Error(), "non-JSON") || strings.HasSuffix(err.Error(), "OK") {
+		t.Errorf("err = %q, want it to name the unexpected body", err)
+	}
+}
+
 func TestSeedCookiesRejectsGarbage(t *testing.T) {
 	s, _ := NewSite("https://www.example.com")
 	if err := s.SeedCookies("not a cookie header"); err == nil {

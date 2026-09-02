@@ -58,8 +58,11 @@ func main() {
 
 	switch flag.Arg(0) {
 	case "login":
-		if _, err := login(ctx, store, site); err != nil {
+		if _, err := store.Migrate(); err != nil {
 			fatal(err)
+		}
+		if _, err := login(ctx, store, site); err != nil {
+			exitLogin(ctx, err)
 		}
 		return
 	case "logout":
@@ -78,7 +81,7 @@ func main() {
 	}
 
 	if err := prepareSite(ctx, store, site); err != nil {
-		fatal(err)
+		exitLogin(ctx, err)
 	}
 
 	chat := client.New(client.Config{
@@ -148,10 +151,22 @@ func prepareSite(ctx context.Context, store auth.Store, site *auth.Site) error {
 	return nil
 }
 
+// exitLogin ends a failed login. An interrupt at a prompt is the user
+// leaving, not a failure to report.
+func exitLogin(ctx context.Context, err error) {
+	if ctx.Err() != nil {
+		os.Exit(130)
+	}
+	fatal(err)
+}
+
 // login runs the interactive flow and persists the remember cookie.
 func login(ctx context.Context, store auth.Store, site *auth.Site) (auth.Session, error) {
 	sess, err := auth.Login(ctx, site, termPrompter{
-		in: bufio.NewReader(os.Stdin)}, os.Stdout)
+		ctx: ctx,
+		in:  bufio.NewReader(os.Stdin),
+		fd:  int(os.Stdin.Fd()),
+	}, os.Stdout)
 	if err != nil {
 		return auth.Session{}, err
 	}
@@ -163,32 +178,68 @@ func login(ctx context.Context, store auth.Store, site *auth.Site) (auth.Session
 }
 
 // termPrompter reads login input from the terminal, hiding secrets when
-// stdin is a TTY and reading plain lines otherwise (piped input).
+// stdin is a TTY and reading plain lines otherwise (piped input). Reads
+// run on a goroutine so Ctrl-C (which cancels ctx) ends the prompt
+// instead of restarting the blocked read; the abandoned reader is
+// harmless because the flow aborts and the process exits.
 type termPrompter struct {
-	in *bufio.Reader
+	ctx context.Context
+	in  *bufio.Reader
+	fd  int
+}
+
+type readResult struct {
+	text string
+	err  error
 }
 
 func (p termPrompter) Line(prompt string) (string, error) {
 	fmt.Print(prompt)
-	line, err := p.in.ReadString('\n')
-	if err != nil && line == "" {
-		return "", err
-	}
-	return strings.TrimSpace(line), nil
+	ch := make(chan readResult, 1)
+	go func() {
+		line, err := p.in.ReadString('\n')
+		if err != nil && line == "" {
+			ch <- readResult{err: err}
+			return
+		}
+		ch <- readResult{text: strings.TrimSpace(line)}
+	}()
+	return p.wait(ch, nil)
 }
 
 func (p termPrompter) Secret(prompt string) (string, error) {
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
+	if !term.IsTerminal(p.fd) {
 		return p.Line(prompt)
 	}
 	fmt.Print(prompt)
-	raw, err := term.ReadPassword(fd)
-	fmt.Println()
+	// ReadPassword restores the terminal itself on a normal return; on
+	// cancellation nothing else would, so keep the state to restore.
+	state, err := term.GetState(p.fd)
 	if err != nil {
 		return "", err
 	}
-	return string(raw), nil
+	ch := make(chan readResult, 1)
+	go func() {
+		raw, err := term.ReadPassword(p.fd)
+		ch <- readResult{text: string(raw), err: err}
+	}()
+	text, err := p.wait(ch, func() { _ = term.Restore(p.fd, state) })
+	fmt.Println()
+	return text, err
+}
+
+// wait returns the read result or, if ctx ends first, ctx's error after
+// running cleanup.
+func (p termPrompter) wait(ch <-chan readResult, cleanup func()) (string, error) {
+	select {
+	case r := <-ch:
+		return r.text, r.err
+	case <-p.ctx.Done():
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", p.ctx.Err()
+	}
 }
 
 // envOr reads an environment variable with a default.
