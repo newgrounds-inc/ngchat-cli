@@ -53,6 +53,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - One channel, `general`; the `-channel` flag is gone.
 - Release archives are built with `-trimpath` and a fixed modification
   time, and GitHub Actions are pinned to commit SHAs.
+- The terminal stack moved to Bubble Tea, Bubbles and Lip Gloss v2
+  (`charm.land`). Colors are now downsampled for the terminal at
+  output time, so an entry-gate notice printed on exit renders the
+  same way inside and outside the TUI.
 
 ### Removed
 

@@ -15,7 +15,8 @@ import (
 	"strings"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"golang.org/x/term"
 
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
@@ -143,7 +144,7 @@ func runChat(ctx context.Context, opts chatOptions) error {
 
 	prog := tea.NewProgram(
 		ui.New(chat, ui.Options{Channel: channel, Quiet: opts.quiet}),
-		tea.WithAltScreen(), tea.WithContext(ctx))
+		tea.WithContext(ctx))
 	final, err := prog.Run()
 	if err != nil && ctx.Err() == nil {
 		return err
@@ -372,7 +373,10 @@ environment:
 }
 
 // fatal prints an error and exits non-zero.
+// fatal prints the error and exits 1. The entry-gate notice carries
+// styling from the renderer, which Lip Gloss v2 no longer downsamples
+// at render time, so the writer does it for the terminal at hand.
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "ngchat:", err)
+	_, _ = lipgloss.Fprintln(os.Stderr, "ngchat:", err)
 	os.Exit(1)
 }

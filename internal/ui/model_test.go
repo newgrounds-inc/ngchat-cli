@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
@@ -309,11 +309,11 @@ func TestStatusBarStaysOneLine(t *testing.T) {
 	m.layout(40, 8)
 	m.handleEvent(client.Event{State: client.StateReconnecting,
 		Err: errors.New(strings.Repeat("long reason ", 20))})
-	first := strings.SplitN(m.View(), "\n", 2)[0]
+	first := strings.SplitN(m.View().Content, "\n", 2)[0]
 	if lipgloss.Width(first) > 40 {
 		t.Errorf("status bar is %d cells wide, want ≤ 40", lipgloss.Width(first))
 	}
-	if lines := strings.Count(m.View(), "\n"); lines != 8-1 {
+	if lines := strings.Count(m.View().Content, "\n"); lines != 8-1 {
 		t.Errorf("view has %d lines, want exactly the terminal height", lines+1)
 	}
 }
@@ -393,11 +393,11 @@ func TestStatusBarCountsUsers(t *testing.T) {
 	m.layout(80, 24)
 	m.handleEvent(client.Event{State: client.StateOnline,
 		Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{{UserID: 1, Username: "ann"}}}})
-	if v := plain(m.View()); !strings.Contains(v, "1 user") || strings.Contains(v, "1 users") {
+	if v := plain(m.View().Content); !strings.Contains(v, "1 user") || strings.Contains(v, "1 users") {
 		t.Errorf("view = %q, want a singular user count", v)
 	}
 	m.handleEvent(joined(2, "bob", false))
-	if v := plain(m.View()); !strings.Contains(v, "2 users") {
+	if v := plain(m.View().Content); !strings.Contains(v, "2 users") {
 		t.Errorf("view = %q, want 2 users", v)
 	}
 }
@@ -462,7 +462,7 @@ func TestTimestampToggle(t *testing.T) {
 	if got := plain(m.renderItem(m.items[0])); got != "<bob> hi" {
 		t.Errorf("row without times = %q", got)
 	}
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	next, _ := m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
 	m = next.(Model)
 	if got := plain(m.renderItem(m.items[0])); got != "13:05 <bob> hi" {
 		t.Errorf("row with times = %q", got)
@@ -473,12 +473,12 @@ func TestTimestampToggle(t *testing.T) {
 // to hit by reflex from a modal editor.
 func TestEscDoesNotQuit(t *testing.T) {
 	m := newModel()
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc}); cmd != nil {
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape}); cmd != nil {
 		if _, quit := cmd().(tea.QuitMsg); quit {
 			t.Error("esc produced tea.Quit")
 		}
 	}
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("ctrl+c should still quit")
 	}

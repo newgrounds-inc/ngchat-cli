@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
@@ -159,23 +159,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout(msg.Width, msg.Height)
 		return m, nil
 
-	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC:
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c":
 			return m, tea.Quit
-		case tea.KeyCtrlS:
+		case "ctrl+s":
 			m.revealSpoilers = !m.revealSpoilers
 			m.refresh(false)
 			return m, nil
-		case tea.KeyCtrlT:
+		case "ctrl+t":
 			m.showTimes = !m.showTimes
 			m.refresh(false)
 			return m, nil
-		case tea.KeyPgUp, tea.KeyPgDown:
+		case "pgup", "pgdown":
+			// Only the paging keys reach the viewport: its default keymap
+			// also binds letters, which belong to the input line.
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg)
 			return m, cmd
-		case tea.KeyEnter:
+		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
@@ -467,13 +469,13 @@ func (m *Model) layout(w, h int) {
 	helpHeight := 1
 	vh := max(1, h-inputHeight-statusHeight-helpHeight)
 	if !m.ready {
-		m.vp = viewport.New(w, vh)
+		m.vp = viewport.New(viewport.WithWidth(w), viewport.WithHeight(vh))
 		m.ready = true
 	} else {
-		m.vp.Width = w
-		m.vp.Height = vh
+		m.vp.SetWidth(w)
+		m.vp.SetHeight(vh)
 	}
-	m.input.Width = max(10, w-4)
+	m.input.SetWidth(max(10, w-4))
 	m.refresh(false)
 }
 
@@ -484,7 +486,7 @@ func (m *Model) refresh(follow bool) {
 	}
 	atBottom := m.vp.AtBottom()
 	var lines []string
-	wrap := lipgloss.NewStyle().Width(m.vp.Width)
+	wrap := lipgloss.NewStyle().Width(m.vp.Width())
 	for _, it := range m.items {
 		lines = append(lines, wrap.Render(m.renderItem(it)))
 	}
@@ -534,8 +536,16 @@ func (m *Model) renderItem(it item) string {
 	return prefix + speaker + " " + body
 }
 
-// View implements tea.Model.
-func (m Model) View() string {
+// View implements tea.Model. The alt screen is declared here rather
+// than as a program option: that is how v2 owns terminal modes.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.content())
+	v.AltScreen = true
+	return v
+}
+
+// content draws the whole screen: status bar, transcript, input, help.
+func (m Model) content() string {
 	if !m.ready {
 		return "connecting…"
 	}
@@ -548,11 +558,11 @@ func (m Model) View() string {
 	}
 	// One line, always: a long stop reason would otherwise wrap the bar
 	// and push the layout off the bottom of the screen.
-	status = xansi.Truncate(status, max(0, m.vp.Width-2), "…")
+	status = xansi.Truncate(status, max(0, m.vp.Width()-2), "…")
 	help := helpStyle.Render(
 		" enter send · /who · pgup/pgdn scroll · ctrl+s spoilers · " +
 			"ctrl+t times · ctrl+c quit")
-	return statusStyle.Width(m.vp.Width).Render(status) + "\n" +
+	return statusStyle.Width(m.vp.Width()).Render(status) + "\n" +
 		m.vp.View() + "\n" +
 		m.input.View() + "\n" +
 		help
