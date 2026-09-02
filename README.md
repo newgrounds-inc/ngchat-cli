@@ -34,7 +34,8 @@ refuses the cookie (you changed your password), ngchat exits and asks you
 to run `ngchat login` again.
 
 If your account is set to log in with email only, enter your email
-address at the first prompt.
+address at the first prompt. Mistyped it? Press Enter with no password
+to go back.
 
 ## Terminal niceties
 

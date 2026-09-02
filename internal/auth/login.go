@@ -36,21 +36,70 @@ type Session struct {
 const IdentityHelp = "Use your email address if your account is set to " +
 	"log in with email only."
 
+// PasswordHelp is shown before the password prompt. An empty password is
+// never sent: the site would only answer 422 and count it against the
+// login limiter, so the entry doubles as the way back to the identity.
+const PasswordHelp = "Press Enter with no password to change the username."
+
 // Login walks the password and two-factor steps until the jar holds a
 // remember cookie. Wrong credentials re-prompt from the password step;
-// three wrong codes or an expired challenge restart there too. Lockout
-// (429) and an undeliverable code (422) end the flow with the site's
-// message, since only waiting or support can fix them.
+// three wrong codes or an expired challenge restart there too; an empty
+// password goes back to the identity prompt. Lockout (429) and an
+// undeliverable code (422) end the flow with the site's message, since
+// only waiting or support can fix them.
 func Login(ctx context.Context, site *Site, p Prompter, out io.Writer) (Session, error) {
 	fmt.Fprintln(out, IdentityHelp)
-	identity, err := p.Line("Newgrounds username or email: ")
-	if err != nil {
-		return Session{}, err
+	identity := ""
+	for {
+		var err error
+		identity, err = askIdentity(p, identity)
+		if err != nil {
+			return Session{}, err
+		}
+		fmt.Fprintln(out, PasswordHelp)
+		sess, back, err := passwordStep(ctx, site, p, out, identity)
+		if err != nil {
+			return Session{}, err
+		}
+		if !back {
+			return sess, nil
+		}
 	}
+}
+
+// askIdentity prompts for the identity, offering the previous one as the
+// default so a stray Enter at the password prompt costs nothing.
+func askIdentity(p Prompter, prev string) (string, error) {
+	for {
+		prompt := "Newgrounds username or email: "
+		if prev != "" {
+			prompt = fmt.Sprintf("Newgrounds username or email [%s]: ", prev)
+		}
+		identity, err := p.Line(prompt)
+		if err != nil {
+			return "", err
+		}
+		identity = strings.TrimSpace(identity)
+		switch {
+		case identity != "":
+			return identity, nil
+		case prev != "":
+			return prev, nil
+		}
+	}
+}
+
+// passwordStep loops on the password prompt for one identity. back is
+// true when the user asked to change the identity.
+func passwordStep(ctx context.Context, site *Site, p Prompter, out io.Writer,
+	identity string) (Session, bool, error) {
 	for {
 		password, err := p.Secret("Password: ")
 		if err != nil {
-			return Session{}, err
+			return Session{}, false, err
+		}
+		if password == "" {
+			return Session{}, true, nil
 		}
 		res, err := site.Login(ctx, identity, password)
 		if err != nil {
@@ -58,17 +107,19 @@ func Login(ctx context.Context, site *Site, p Prompter, out io.Writer) (Session,
 				fmt.Fprintln(out, err.Error())
 				continue
 			}
-			return Session{}, err
+			return Session{}, false, err
 		}
 		if res.TwoFactor == "" {
-			return session(site, res.User)
+			sess, err := session(site, res.User)
+			return sess, false, err
 		}
 		user, done, err := challenge(ctx, site, p, out, res)
 		if err != nil {
-			return Session{}, err
+			return Session{}, false, err
 		}
 		if done {
-			return session(site, user)
+			sess, err := session(site, user)
+			return sess, false, err
 		}
 	}
 }

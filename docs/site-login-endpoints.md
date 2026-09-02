@@ -73,7 +73,7 @@ Outcomes:
 | 200 | success | `{"two_factor": null, "user": {"id", "username"}}` | logged in; store `ng_remember` from `Set-Cookie` |
 | 200 | success | `{"two_factor": "email", "obfuscated_email": "b***@example.com"}` | prompt for the emailed code (valid 1 hour) |
 | 200 | success | `{"two_factor": "totp", "obfuscated_email": null}` | prompt for the authenticator code, or a recovery code |
-| 422 | fail | `{"identity": ["..."]}` or `{"password": ["..."]}` | show message, re-prompt from the password step |
+| 422 | fail | `{"identity": ["..."]}` or `{"password": ["..."]}` | show message, re-prompt from the password step (an empty password there is not sent; it returns to the identity prompt) |
 | 422 | fail | `{"undeliverable": ["..."]}` | show the message verbatim, exit; the account's email cannot receive a code and only support can fix it |
 | 429 | fail | `{"identity": ["Too many login attempts. Please try again in ..."]}` | show message verbatim, exit. No `retry_after` field; the human-readable wait is inside the message |
 | 403 | fail | `{"http": ["..."]}` | jar is already authenticated; should not happen with a fresh jar. Clear jar, re-prime, retry once |

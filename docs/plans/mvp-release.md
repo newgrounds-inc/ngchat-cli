@@ -55,7 +55,11 @@ username or email. After the password the site either emails a code (no
 authenticator) or expects a TOTP code; at the code prompt a six-character
 entry is sent as `code` and anything else as `recovery_code`, so TOTP
 backup codes work without a separate command. Three wrong codes restart
-from the password step. No resend; an emailed code lives one hour.
+from the password step. An empty password is never sent (the site would
+only 422 and count it against the login limiter); it goes back to the
+identity prompt, which offers the previous entry as the default, so a
+mistyped username is fixable without Ctrl-C (added after review,
+2026-09-02). No resend; an emailed code lives one hour.
 Always `remember=true`. The site deliberately does not distinguish an
 "email only" account that typed its username from a wrong password, so
 the prompt's help text says to use the email address in that case

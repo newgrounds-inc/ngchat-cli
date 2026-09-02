@@ -265,3 +265,57 @@ func TestLoginFlowPrompterErrorAborts(t *testing.T) {
 		t.Error("login attempted without an identity")
 	}
 }
+
+// TestLoginFlowEmptyPasswordChangesIdentity: an empty password is never
+// sent (the site would 422 and count it against the limiter); it goes
+// back to the identity prompt, which offers the previous entry as the
+// default.
+func TestLoginFlowEmptyPasswordChangesIdentity(t *testing.T) {
+	fs := newFakeSite(t)
+	p := &scriptPrompter{lines: []string{"bobb", "bob"}, secrets: []string{"", "pw"}}
+	var out bytes.Buffer
+	if _, err := Login(context.Background(), fs.site(t), p, &out); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if fs.count(loginPath) != 1 {
+		t.Errorf("login calls = %d, want 1 (empty password stays local)", fs.count(loginPath))
+	}
+	if fs.lastBody(loginPath)["identity"] != "bob" {
+		t.Errorf("identity sent = %v, want the corrected one", fs.lastBody(loginPath)["identity"])
+	}
+	if p.count("Newgrounds username or email [bobb]: ") != 1 {
+		t.Errorf("second identity prompt did not offer the previous value: %v", p.asked)
+	}
+	if !strings.Contains(out.String(), PasswordHelp) {
+		t.Error("password help not shown")
+	}
+}
+
+// TestLoginFlowIdentityDefaults: at the identity prompt, an empty entry
+// keeps the previous identity when there is one and re-asks otherwise.
+func TestLoginFlowIdentityDefaults(t *testing.T) {
+	t.Run("keeps previous", func(t *testing.T) {
+		fs := newFakeSite(t)
+		p := &scriptPrompter{lines: []string{"bob", ""}, secrets: []string{"", "pw"}}
+		if _, err := Login(context.Background(), fs.site(t), p, &bytes.Buffer{}); err != nil {
+			t.Fatalf("Login: %v", err)
+		}
+		if fs.lastBody(loginPath)["identity"] != "bob" {
+			t.Errorf("identity sent = %v, want bob", fs.lastBody(loginPath)["identity"])
+		}
+	})
+	t.Run("re-asks when blank", func(t *testing.T) {
+		fs := newFakeSite(t)
+		p := &scriptPrompter{lines: []string{"", "  ", "bob"}, secrets: []string{"pw"}}
+		if _, err := Login(context.Background(), fs.site(t), p, &bytes.Buffer{}); err != nil {
+			t.Fatalf("Login: %v", err)
+		}
+		if fs.count(loginPath) != 1 || fs.lastBody(loginPath)["identity"] != "bob" {
+			t.Errorf("login calls = %d, identity = %v", fs.count(loginPath),
+				fs.lastBody(loginPath)["identity"])
+		}
+		if p.count("Newgrounds username or email: ") != 3 {
+			t.Errorf("identity prompted %d times, want 3", p.count("Newgrounds username or email: "))
+		}
+	})
+}

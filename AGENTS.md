@@ -59,7 +59,9 @@ because the site rotates it on each completed login step; a jar with no
 token primes itself with a guest `GET auth/me`, and a 419 re-primes and
 retries once. `Login` (the flow) owns the prompts: wrong credentials
 re-ask the password, three wrong codes or a stale challenge restart
-there, lockout and an undeliverable code exit with the site's message. A
+there, an empty password goes back to the identity (never sent: it
+would only burn a limiter hit), lockout and an undeliverable code exit
+with the site's message. A
 six-character code goes as `code`, anything else as `recovery_code`.
 `ServiceTokenMinter` is the `Minter` the client uses; a 401 from it is
 `ErrSignedOut`, which the client turns into a stop and the TUI into an
