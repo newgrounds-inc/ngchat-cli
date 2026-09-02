@@ -135,7 +135,7 @@ are ticked and `go vet ./... && go test -race ./...` passes.
         (2026-09-02)
   - [x] Push and close ngchat-cli#1 and ngchat-cli#2
 
-- [ ] **Phase 2 — login and re-mint (CLI side, against fakes)**
+- [x] **Phase 2 — login and re-mint (CLI side, against fakes)**
   - [x] ADR 0003: service-token re-mint with a cookie jar, `jwt.php`
         removed; what the keyring holds and why; the 401 = signed-out
         rule
@@ -155,11 +155,13 @@ are ticked and `go vet ./... && go test -race ./...` passes.
         2FA email, 2FA TOTP, recovery code, bad credentials, lockout,
         undeliverable, 403 on a stale challenge, XSRF rotation between
         steps, 401 and 419 on service-token)
-  - [ ] Live check with `cmd/smoke` once the site endpoints are on dev
-        (guest paths verified 2026-09-02: prime sets `XSRF-TOKEN` and
+  - [x] Live check with `cmd/smoke` once the site endpoints are on dev
+        (2026-09-02: guest paths first — prime sets `XSRF-TOKEN` and
         `newgrounds_session`, 419/422/403/401/406 shapes match, an
         unauthenticated smoke stops with `signed out` and no reconnect;
-        the logged-in run still needs a human at the 2FA prompt)
+        then a real `ngchat login` with a wrong 2FA code rejected and
+        the right one accepted, followed by smoke reaching `subscribed`
+        and `revalidated` with no reconnect)
 
 - [ ] **Phase 3 — UI**
   - [ ] Decode `Subscribed.userList`; keep a user list from
