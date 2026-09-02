@@ -27,11 +27,20 @@ two-factor code if your account uses one (a TOTP recovery code works at
 the same prompt). `ngchat login` does the same on demand and `ngchat
 logout` clears it.
 
-Only the site's long-lived remember cookie is stored, in your OS keyring
-(or a `0600` file if no keyring is available); it mints short-lived chat
-tokens for you. Your password is never written to disk. If the site
-refuses the cookie (you changed your password), ngchat exits and asks you
-to run `ngchat login` again.
+Only the site's long-lived remember cookie is stored; it mints
+short-lived chat tokens for you. Your password is never written to disk.
+If the site refuses the cookie (you changed your password), ngchat exits
+and asks you to run `ngchat login` again.
+
+### Where the cookie lives
+
+ngchat prefers the OS keyring: macOS Keychain, Windows Credential
+Manager, or on Linux a Secret Service provider over D-Bus (GNOME Keyring,
+KDE Wallet, or KeePassXC with its Secret Service integration on). When
+none answers, it prints `no OS keyring available` and writes the cookie
+to `~/.config/ngchat/credentials.json` with mode `0600` instead. That is
+fine on a headless box or a server you alone log into; on a shared
+desktop, set up a keyring and run `ngchat login` again to move it.
 
 If your account is set to log in with email only, enter your email
 address at the first prompt. Mistyped it? Press Enter with no password
