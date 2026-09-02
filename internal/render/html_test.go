@@ -37,6 +37,14 @@ func TestText(t *testing.T) {
 			`<a href="https://example.com/x">https://example.com/x</a>`,
 			"https://example.com/x"},
 		{"link without href", `<a>bare</a>`, "bare"},
+		// The server's mention markup: the name is the destination, so
+		// no visible href.
+		{"mention keeps only the name",
+			`<a href="//bob.newgrounds.com" title="Check out bob's user page!" target="_blank">@bob</a>`,
+			"@bob"},
+		{"group mention keeps only the name",
+			`<a href="https://www.newgrounds.com" title="Visit Newgrounds!" target="_blank">@!everyone</a>`,
+			"@!everyone"},
 
 		{"image with alt and src",
 			`<img src="https://example.com/i.png" alt="cat">`,
@@ -92,5 +100,9 @@ func TestTextHyperlinks(t *testing.T) {
 	}
 	if Hyperlink("", "x") != "x" {
 		t.Error("Hyperlink with no URL should return the text unchanged")
+	}
+	mention := Text(`<a href="//bob.newgrounds.com">@bob</a>`)
+	if !strings.Contains(mention, "\x1b]8;;https://bob.newgrounds.com\x1b\\") {
+		t.Errorf("mention = %q, want a scheme added to the scheme-relative href", mention)
 	}
 }

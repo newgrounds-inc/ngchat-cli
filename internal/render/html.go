@@ -62,6 +62,11 @@ func Hyperlink(url, text string) string {
 	if url == "" {
 		return text
 	}
+	// The site writes user-page links scheme-relative ("//bob.newgrounds.com");
+	// a terminal has no page scheme to inherit, so pick the site's.
+	if strings.HasPrefix(url, "//") {
+		url = "https:" + url
+	}
 	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
 }
 
@@ -146,8 +151,10 @@ func Text(fragment string) string {
 					// The visible href stays even though the text is
 					// already a hyperlink: a terminal without OSC 8
 					// support would otherwise show a bare word with no
-					// way to reach the URL.
-					if l.href != "" && strings.TrimSpace(l.text.String()) != l.href {
+					// way to reach the URL. A mention is the exception:
+					// "@bob" already names where it goes.
+					text := strings.TrimSpace(l.text.String())
+					if l.href != "" && text != l.href && !strings.HasPrefix(text, "@") {
 						out.WriteString(Hyperlink(l.href,
 							dimStyle.Render(" <"+l.href+">")))
 					}
