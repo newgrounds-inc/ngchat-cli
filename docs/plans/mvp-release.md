@@ -167,18 +167,24 @@ are ticked and `go vet ./... && go test -race ./...` passes.
         the right one accepted, followed by smoke reaching `subscribed`
         and `revalidated` with no reconnect)
 
-- [ ] **Phase 3 — UI**
-  - [ ] Decode `Subscribed.userList`; keep a user list from
+- [x] **Phase 3 — UI** (2026-09-02)
+  - [x] Decode `Subscribed.userList`; keep a user list from
         `userJoined`, `userLeft`, `userUpdated`, `away`
-  - [ ] Status bar count; `/who`
-  - [ ] Mention highlight and bell; `-quiet`
-  - [ ] OSC 8 hyperlinks in `internal/render`
-  - [ ] Timestamp toggle
-  - [ ] `esc` no longer quits; transcript cap at 2000 rows
-  - [ ] `away` and `notifications` as faint event rows
-  - [ ] `-debug` log with token and cookie redaction; path printed on
-        exit
-  - [ ] Remove `-channel`; hard-code `general`
+  - [x] Status bar count; `/who`
+  - [x] Mention highlight and bell; `-quiet` (a backfilled mention is
+        highlighted but never rings, so reconnects stay silent)
+  - [x] OSC 8 hyperlinks in `internal/render` (the visible `<href>`
+        stays for terminals without OSC 8)
+  - [x] Timestamp toggle (`ctrl+t`, server time in local zone)
+  - [x] `esc` no longer quits; transcript cap at 2000 rows
+  - [x] `away` and `notifications` as faint event rows (the inbox is
+        persistent server-side and resent on every subscribe, so only
+        the first subscribe of a run replays it, newest 10 rows)
+  - [x] `-debug` log with token and cookie redaction; path printed on
+        exit (`$XDG_STATE_HOME/ngchat/debug.log`, `~/.local/state` by
+        default, `~/Library/Logs` on macOS; mode `0600`; heartbeats
+        skipped)
+  - [x] Remove `-channel`; hard-code `general`
 
 - [ ] **Phase 4 — release hygiene and public flip**
   - [ ] `.github/workflows/ci.yml`: vet, test, race on push and PR
