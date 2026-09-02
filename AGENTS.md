@@ -34,7 +34,9 @@ request).
 
 Without `SMOKE_NG_COOKIE` the harness uses the remember cookie that
 `ngchat login` stored, which is how the login flow is verified end to
-end: `NGCHAT_SITE_URL=... ngchat login`, then `go run ./cmd/smoke`.
+end: `NGCHAT_SITE_URL=... ngchat login`, then `go run ./cmd/smoke`. An
+exported `SMOKE_NG_COOKIE` wins over the stored login, so `unset` it
+first; the first smoke line names which source it used.
 
 To watch a token renewal, set `APP_JWT_CHAT_TTL` to 180 seconds on the
 dev site and run with `SMOKE_SECONDS=200`: expect a `revalidated` line

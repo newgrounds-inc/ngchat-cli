@@ -31,12 +31,15 @@ func main() {
 	}
 	// SMOKE_NG_COOKIE is a raw cookie header; without it the stored
 	// remember cookie from `ngchat login` is used, which is how the
-	// login flow itself gets verified end to end.
+	// login flow itself gets verified end to end. The source is printed
+	// because a stale export silently wins over a fresh login.
 	if header := os.Getenv("SMOKE_NG_COOKIE"); header != "" {
 		if err := site.SeedCookies(header); err != nil {
 			fmt.Println("SMOKE_NG_COOKIE:", err)
 			os.Exit(2)
 		}
+		fmt.Println("credential: SMOKE_NG_COOKIE from the environment " +
+			"(unset it to use the stored login)")
 	} else {
 		remember, err := (auth.Store{}).Load(auth.RememberKey)
 		if err != nil {
@@ -44,6 +47,7 @@ func main() {
 			os.Exit(2)
 		}
 		site.SetRemember(remember)
+		fmt.Println("credential: stored login")
 	}
 	minter := &auth.ServiceTokenMinter{Site: site}
 
