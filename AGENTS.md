@@ -27,9 +27,12 @@ export SMOKE_SECONDS=150                      # optional; default 15
 go run ./cmd/smoke
 ```
 
-To watch a token renewal, set `APP_JWT_CHAT_TTL` to ~90 seconds on the
-dev site and run with `SMOKE_SECONDS=150`: expect a `revalidated` line
-and no `state=2` (reconnecting) line.
+To watch a token renewal, set `APP_JWT_CHAT_TTL` to 180 seconds on the
+dev site and run with `SMOKE_SECONDS=200`: expect a `revalidated` line
+about every 70s and no `state=2` (reconnecting) line. The TTL must stay
+above the server's two-minute nudge lead: a shorter one makes the server
+nudge again the instant each renewal lands, the client's 5/min renewal
+budget then refuses the rest, and the token expires into a reconnect.
 
 The TUI takes over the screen, so `cmd/smoke` is the right tool for
 verifying protocol or auth changes; reserve `cmd/ngchat` for UI work.
