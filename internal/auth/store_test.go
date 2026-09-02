@@ -22,6 +22,42 @@ func tempConfigDir(t *testing.T) {
 	t.Setenv("HOME", dir)
 }
 
+// noKeyring swaps the keyring backend for one that always fails, which
+// is what a headless box looks like, so Store methods exercise the file
+// fallback without touching the developer's real keyring.
+func noKeyring(t *testing.T) {
+	t.Helper()
+	saved := kr
+	t.Cleanup(func() { kr = saved })
+	unavailable := errors.New("no secret service")
+	kr = keyringBackend{
+		get:    func(_, _ string) (string, error) { return "", unavailable },
+		set:    func(_, _, _ string) error { return unavailable },
+		delete: func(_, _ string) error { return unavailable },
+	}
+}
+
+// memKeyring swaps in an in-memory keyring so the preferred path is
+// covered too.
+func memKeyring(t *testing.T) map[string]string {
+	t.Helper()
+	saved := kr
+	t.Cleanup(func() { kr = saved })
+	m := map[string]string{}
+	kr = keyringBackend{
+		get: func(_, k string) (string, error) {
+			v, ok := m[k]
+			if !ok {
+				return "", errors.New("not found")
+			}
+			return v, nil
+		},
+		set:    func(_, k, v string) error { m[k] = v; return nil },
+		delete: func(_, k string) error { delete(m, k); return nil },
+	}
+	return m
+}
+
 func TestFileStoreRoundTrip(t *testing.T) {
 	tempConfigDir(t)
 
@@ -108,10 +144,86 @@ func TestFileReadRejectsCorruptFile(t *testing.T) {
 
 func TestStoreDeleteIsIdempotent(t *testing.T) {
 	tempConfigDir(t)
+	noKeyring(t)
 
 	// Deleting a key that was never stored is a no-op, not an error — this
 	// is what `ngchat logout` does on a fresh machine.
 	if err := (Store{}).Delete("ngchat-test-absent-key"); err != nil {
 		t.Errorf("Delete on missing key: %v", err)
+	}
+}
+
+func TestStorePrefersKeyring(t *testing.T) {
+	tempConfigDir(t)
+	m := memKeyring(t)
+	var s Store
+	if err := s.Save(RememberKey, "v1"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if m[RememberKey] != "v1" {
+		t.Error("value did not land in the keyring")
+	}
+	if _, err := fileLoad(RememberKey); !errors.Is(err, ErrNotFound) {
+		t.Error("value leaked into the fallback file while a keyring exists")
+	}
+	if got, _ := s.Load(RememberKey); got != "v1" {
+		t.Errorf("Load = %q", got)
+	}
+	if err := s.Delete(RememberKey); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := s.Load(RememberKey); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Load after Delete = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStoreFallsBackToFile(t *testing.T) {
+	tempConfigDir(t)
+	noKeyring(t)
+	var s Store
+	if err := s.Save(RememberKey, "v1"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if got, err := s.Load(RememberKey); err != nil || got != "v1" {
+		t.Errorf("Load = %q, %v", got, err)
+	}
+}
+
+// TestMigrateRemovesLegacyCookieHeader: the v0.1 slot held a browser
+// cookie header that cannot become a remember value, so migration
+// deletes it and reports that a login is needed.
+func TestMigrateRemovesLegacyCookieHeader(t *testing.T) {
+	for _, backend := range []struct {
+		name  string
+		setup func(t *testing.T)
+	}{
+		{"file", noKeyring},
+		{"keyring", func(t *testing.T) { memKeyring(t) }},
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			tempConfigDir(t)
+			backend.setup(t)
+			var s Store
+			if err := s.Save(legacyCookieKey, "vmkldu5I8m=abc"); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			if err := s.Save(RememberKey, "keep"); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			removed, err := s.Migrate()
+			if err != nil || !removed {
+				t.Fatalf("Migrate = %v, %v; want true, nil", removed, err)
+			}
+			if _, err := s.Load(legacyCookieKey); !errors.Is(err, ErrNotFound) {
+				t.Errorf("legacy slot still loads: %v", err)
+			}
+			if got, _ := s.Load(RememberKey); got != "keep" {
+				t.Errorf("remember slot disturbed: %q", got)
+			}
+			removed, err = s.Migrate()
+			if err != nil || removed {
+				t.Errorf("second Migrate = %v, %v; want false, nil", removed, err)
+			}
+		})
 	}
 }

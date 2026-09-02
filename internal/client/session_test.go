@@ -15,16 +15,18 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 )
 
 // countingMinter hands out numbered tokens and can be told to fail, to
 // repeat the last token (a cached mint), or to take a while.
 type countingMinter struct {
-	calls  atomic.Int32
-	fail   atomic.Bool
-	repeat atomic.Bool
-	delay  time.Duration
+	calls     atomic.Int32
+	fail      atomic.Bool
+	signedOut atomic.Bool
+	repeat    atomic.Bool
+	delay     time.Duration
 }
 
 func (m *countingMinter) Mint(ctx context.Context) (string, error) {
@@ -35,6 +37,9 @@ func (m *countingMinter) Mint(ctx context.Context) (string, error) {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
+	}
+	if m.signedOut.Load() {
+		return "", auth.ErrSignedOut
 	}
 	if m.fail.Load() {
 		return "", errors.New("mint down")
@@ -449,5 +454,54 @@ func TestStopReasons(t *testing.T) {
 				t.Errorf("stop error = %v, want %q", last.Err, tc.want)
 			}
 		})
+	}
+}
+
+// TestSignedOutOnConnectStops: a 401 from the site on the connect mint is
+// final. No dial, no backoff, no reconnect; the stop error wraps
+// auth.ErrSignedOut so the UI can say "run ngchat login".
+func TestSignedOutOnConnectStops(t *testing.T) {
+	fs := newFakeServer(t, func(*websocket.Conn, int, nextFn) string {
+		return "server close"
+	})
+	minter := &countingMinter{}
+	minter.signedOut.Store(true)
+	events := runUntilStopped(t, fs, minter)
+	last := events[len(events)-1]
+	if last.State != StateStopped || !errors.Is(last.Err, auth.ErrSignedOut) {
+		t.Errorf("last event = %+v, want StateStopped wrapping ErrSignedOut", last)
+	}
+	if countState(events, StateReconnecting) != 0 {
+		t.Error("signed out must not reconnect")
+	}
+	if fs.attempts.Load() != 0 || minter.calls.Load() != 1 {
+		t.Errorf("attempts = %d, mints = %d; want 0 and 1",
+			fs.attempts.Load(), minter.calls.Load())
+	}
+}
+
+// TestSignedOutOnRevalidateStops: the same 401 during a renewal ends the
+// session at once instead of surfacing as a RenewalFailed and riding the
+// old token to its deadline.
+func TestSignedOutOnRevalidateStops(t *testing.T) {
+	minter := &countingMinter{}
+	fs := newFakeServer(t, func(conn *websocket.Conn, attempt int, next nextFn) string {
+		if attempt > 1 {
+			t.Error("reconnected after being signed out")
+			return "server close"
+		}
+		minter.signedOut.Store(true)
+		ctx := context.Background()
+		_ = send(ctx, conn, map[string]any{"name": "revalidate", "serverTime": 1})
+		quietFor(t, next, 300*time.Millisecond)
+		return ""
+	})
+	events := runUntilStopped(t, fs, minter)
+	last := events[len(events)-1]
+	if last.State != StateStopped || !errors.Is(last.Err, auth.ErrSignedOut) {
+		t.Errorf("last event = %+v, want StateStopped wrapping ErrSignedOut", last)
+	}
+	if hasMsg[RenewalFailed](events) {
+		t.Error("signed out must stop, not report a retryable renewal failure")
 	}
 }

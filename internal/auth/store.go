@@ -1,7 +1,8 @@
-// Package auth handles credential storage and chat-JWT minting.
+// Package auth handles credential storage, site login, and chat-JWT
+// minting.
 //
-// The stored credential is the long-lived NG remember cookie — never the
-// account password (ADR 0001).
+// The stored credential is the value of the site's long-lived remember
+// cookie — never the account password (ADR 0001, ADR 0003).
 package auth
 
 import (
@@ -16,8 +17,32 @@ import (
 
 const keyringService = "ngchat"
 
+// RememberKey is the credential-store slot for the remember cookie
+// value. It is the only key a current binary writes.
+const RememberKey = "ng_remember"
+
+// legacyCookieKey held a whole Cookie header in v0.1 (pasted from a
+// browser). Its session cookie is long dead and the header cannot be
+// turned into a remember value, so migration deletes it and the user
+// logs in once.
+const legacyCookieKey = "ng_cookie"
+
 // ErrNotFound is returned by Load when no value is stored under a key.
 var ErrNotFound = errors.New("credential not found")
+
+// keyringBackend is the OS keyring surface, swappable so tests never
+// touch a developer's real keyring.
+type keyringBackend struct {
+	get    func(service, user string) (string, error)
+	set    func(service, user, password string) error
+	delete func(service, user string) error
+}
+
+var kr = keyringBackend{
+	get:    keyring.Get,
+	set:    keyring.Set,
+	delete: keyring.Delete,
+}
 
 // Store persists secrets in the OS keyring (macOS Keychain, Windows
 // Credential Manager, Linux Secret Service), falling back to a 0600 JSON
@@ -26,7 +51,7 @@ type Store struct{}
 
 // Save stores a secret under key, preferring the keyring.
 func (Store) Save(key, value string) error {
-	if err := keyring.Set(keyringService, key, value); err == nil {
+	if err := kr.set(keyringService, key, value); err == nil {
 		return nil
 	}
 	return fileSave(key, value)
@@ -35,7 +60,7 @@ func (Store) Save(key, value string) error {
 // Load retrieves a secret, checking the keyring then the fallback file.
 // Returns ErrNotFound when neither has it.
 func (Store) Load(key string) (string, error) {
-	if v, err := keyring.Get(keyringService, key); err == nil {
+	if v, err := kr.get(keyringService, key); err == nil {
 		return v, nil
 	}
 	return fileLoad(key)
@@ -44,13 +69,25 @@ func (Store) Load(key string) (string, error) {
 // Delete removes a secret from both backends; missing entries are not an
 // error.
 func (Store) Delete(key string) error {
-	_ = keyring.Delete(keyringService, key)
+	_ = kr.delete(keyringService, key)
 	m, path, err := fileRead()
 	if err != nil || m == nil {
 		return nil
 	}
 	delete(m, key)
 	return fileWrite(path, m)
+}
+
+// Migrate removes the v0.1 cookie-header slot. It reports whether one
+// was there so the caller can explain the login prompt that follows.
+func (s Store) Migrate() (bool, error) {
+	if _, err := s.Load(legacyCookieKey); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, s.Delete(legacyCookieKey)
 }
 
 // credentialsPath returns the fallback file location, creating parents.

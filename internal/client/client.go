@@ -153,10 +153,26 @@ func (c *Client) Run(ctx context.Context) {
 	}
 }
 
-// stopError marks conditions that must not trigger auto-reconnect.
-type stopError struct{ reason string }
+// stopError marks conditions that must not trigger auto-reconnect. err,
+// when set, is the cause so callers can errors.Is it (auth.ErrSignedOut).
+type stopError struct {
+	reason string
+	err    error
+}
 
 func (e *stopError) Error() string { return e.reason }
+func (e *stopError) Unwrap() error { return e.err }
+
+// mintFailure classifies a failed mint. A 401 from the site means the
+// remember cookie is gone (password changed, or `ngchat logout` ran):
+// no reconnect can fix it, so it is final and the UI tells the user to
+// log in again. Anything else is transient and reconnects with backoff.
+func mintFailure(stage string, err error) error {
+	if errors.Is(err, auth.ErrSignedOut) {
+		return &stopError{reason: "signed out", err: err}
+	}
+	return fmt.Errorf("%s: %w", stage, err)
+}
 
 // noReconnectReasons are close reasons the browser client also treats as
 // final.
@@ -175,7 +191,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 	token, err := c.cfg.Minter.Mint(mintCtx)
 	cancelMint()
 	if err != nil {
-		return false, fmt.Errorf("minting chat JWT: %w", err)
+		return false, mintFailure("minting chat JWT", err)
 	}
 
 	opts := &websocket.DialOptions{}
@@ -262,7 +278,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 			retried, mintErr := c.cfg.Minter.Mint(retryCtx)
 			cancelRetry()
 			if mintErr != nil {
-				return established, fmt.Errorf("re-minting chat JWT: %w", mintErr)
+				return established, mintFailure("re-minting chat JWT", mintErr)
 			}
 			token = retried
 			if err := c.send(ctx, protocol.NewAuthenticate(token)); err != nil {
@@ -305,6 +321,12 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 				// not strictly later than the one in force, so a cached
 				// mint is worse than no answer at all.
 				mintErr = errors.New("mint returned the token already in force")
+			}
+			if errors.Is(mintErr, auth.ErrSignedOut) {
+				// The token in force would carry the socket to its
+				// deadline, but the account is signed out: stop now
+				// rather than pretend for up to two minutes.
+				return established, mintFailure("renewing chat JWT", mintErr)
 			}
 			if mintErr != nil {
 				c.emit(ctx, Event{

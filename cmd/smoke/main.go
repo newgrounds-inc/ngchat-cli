@@ -18,11 +18,34 @@ import (
 
 func main() {
 	routing := os.Getenv("NGCHAT_ROUTING_COOKIE")
-	minter := &auth.CookieMinter{
-		JWTURL:   os.Getenv("NGCHAT_JWT_URL"),
-		NGCookie: os.Getenv("SMOKE_NG_COOKIE"),
-		Cookie:   routing,
+	site, err := auth.NewSite(os.Getenv("NGCHAT_SITE_URL"))
+	if err != nil {
+		fmt.Println("NGCHAT_SITE_URL:", err)
+		os.Exit(2)
 	}
+	if routing != "" {
+		if err := site.SeedCookies(routing); err != nil {
+			fmt.Println("NGCHAT_ROUTING_COOKIE:", err)
+			os.Exit(2)
+		}
+	}
+	// SMOKE_NG_COOKIE is a raw cookie header; without it the stored
+	// remember cookie from `ngchat login` is used, which is how the
+	// login flow itself gets verified end to end.
+	if header := os.Getenv("SMOKE_NG_COOKIE"); header != "" {
+		if err := site.SeedCookies(header); err != nil {
+			fmt.Println("SMOKE_NG_COOKIE:", err)
+			os.Exit(2)
+		}
+	} else {
+		remember, err := (auth.Store{}).Load(auth.RememberKey)
+		if err != nil {
+			fmt.Println("no SMOKE_NG_COOKIE and no stored login:", err)
+			os.Exit(2)
+		}
+		site.SetRemember(remember)
+	}
+	minter := &auth.ServiceTokenMinter{Site: site}
 
 	// SMOKE_SECONDS extends the run for renewal checks: with the site's
 	// APP_JWT_CHAT_TTL at ~90s, 150s is enough to see revalidate →

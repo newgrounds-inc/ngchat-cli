@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 	"github.com/newgrounds-inc/ngchat-cli/internal/render"
@@ -157,9 +159,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case client.Event:
 		m.handleEvent(msg)
+		if m.SignedOut() {
+			// Nothing inside the TUI can fix a revoked remember cookie
+			// (no inline re-login), so leave the screen and let main
+			// print the one useful instruction.
+			return m, tea.Quit
+		}
 		return m, waitEvent(m.chat.Events())
 	}
 	return m, nil
+}
+
+// SignedOut reports whether the client stopped because the site refused
+// the remember cookie. main reads it after the program exits.
+func (m Model) SignedOut() bool {
+	return m.state == client.StateStopped &&
+		errors.Is(m.stopErr, auth.ErrSignedOut)
 }
 
 // handleEvent folds a chat-client event into the transcript.

@@ -1,11 +1,16 @@
 package ui
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 )
@@ -217,5 +222,34 @@ func TestTypingExpiry(t *testing.T) {
 	}
 	if _, fresh := m.typing["ann"]; !fresh {
 		t.Error("a fresh typing indicator should survive")
+	}
+}
+
+// TestSignedOutQuits: a stop caused by auth.ErrSignedOut ends the program
+// rather than sitting on a "disconnected" status bar the user cannot act
+// on from inside the TUI.
+func TestSignedOutQuits(t *testing.T) {
+	m := New(nil, "general")
+	next, cmd := m.Update(client.Event{State: client.StateStopped,
+		Err: fmt.Errorf("signed out: %w", auth.ErrSignedOut)})
+	if !next.(Model).SignedOut() {
+		t.Fatal("SignedOut() = false")
+	}
+	if cmd == nil {
+		t.Fatal("no command returned, want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("command produced %T, want tea.QuitMsg", cmd())
+	}
+
+	// Any other stop keeps the screen up with the reason visible.
+	m = New(nil, "general")
+	m.handleEvent(client.Event{State: client.StateStopped,
+		Err: errors.New("kicked")})
+	if m.SignedOut() {
+		t.Error("SignedOut() = true for an unrelated stop")
+	}
+	if plain(m.stateLabel()) != "disconnected: kicked" {
+		t.Errorf("status = %q", m.stateLabel())
 	}
 }
