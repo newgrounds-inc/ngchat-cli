@@ -17,6 +17,12 @@
       "matchManagers": ["gomod"]
     },
     {
+      "description": "Indirect requirements are go mod tidy's to move, and the rule above would otherwise re-enable them over the gomod manager's own default.",
+      "enabled": false,
+      "matchDepTypes": ["indirect"],
+      "matchManagers": ["gomod"]
+    },
+    {
       "description": "Actions are pinned to a commit SHA with the tag in a trailing comment; Renovate bumps both.",
       "enabled": true,
       "groupName": "github actions",
