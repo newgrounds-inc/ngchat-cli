@@ -190,6 +190,15 @@ func (m *Model) handleEvent(e client.Event) {
 		m.push(item{kind: "event",
 			text: eventStyle.Render(msg.Username + " left")})
 		delete(m.typing, msg.Username)
+	case protocol.Revalidated:
+		// The socket renewed its token in place; the flags on this
+		// message now describe self. Nothing in the transcript depends on
+		// them yet, so the only visible effect is that no reconnect
+		// divider appears.
+	case client.RenewalFailed:
+		m.push(item{kind: "event", text: eventStyle.Render(
+			"token renewal failed (" + msg.Err.Error() +
+				"); will reconnect when the current token expires")})
 	case protocol.Error:
 		m.push(item{kind: "event",
 			text: errorStyle.Render(msg.Message)})

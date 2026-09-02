@@ -62,6 +62,14 @@ func main() {
 			fmt.Printf("userJoined %s\n", msg.Username)
 		case protocol.UserLeft:
 			fmt.Printf("userLeft %s\n", msg.Username)
+		case protocol.UserUpdated:
+			fmt.Printf("userUpdated %s mod=%v away=%v\n",
+				msg.Username, msg.IsChatMod, msg.IsAway)
+		case protocol.Revalidated:
+			fmt.Printf("revalidated admin=%v chatMod=%v siteMod=%v\n",
+				msg.IsAdmin, msg.IsChatMod, msg.IsSiteMod)
+		case client.RenewalFailed:
+			fmt.Printf("renewal failed: %v\n", msg.Err)
 		case protocol.Unknown:
 			fmt.Printf("UNKNOWN/undecodable frame: name=%q\n", msg.Name)
 		case nil:

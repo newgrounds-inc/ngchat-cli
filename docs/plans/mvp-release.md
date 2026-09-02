@@ -104,14 +104,14 @@ are ticked and `go vet ./... && go test -race ./...` passes.
   - [ ] Site session opened from the brief (site repo, not here)
 
 - [ ] **Phase 1 — protocol sync (ngchat-cli#1)**
-  - [ ] Port `Revalidate`, `Revalidated`, `UserUpdated` into
+  - [x] Port `Revalidate`, `Revalidated`, `UserUpdated` into
         `internal/protocol/server.go`; `Reauthenticate` into `client.go`
-  - [ ] Client answers `revalidate` once: mint, send `reauthenticate`;
+  - [x] Client answers `revalidate` once: mint, send `reauthenticate`;
         on `revalidated` apply the privilege flags; a failed mint is an
         event, never fatal (the close timer still arms the reconnect)
-  - [ ] Fix `Kicked`: schema field is `reason`, we decode `message`
-  - [ ] Decode `IdleTimeout.reason` into the stop error
-  - [ ] Tests: decode cases for the four names; a client test driving
+  - [x] Fix `Kicked`: schema field is `reason`, we decode `message`
+  - [x] Decode `IdleTimeout.reason` into the stop error
+  - [x] Tests: decode cases for the four names; a client test driving
         `revalidate` through a fake server, asserting `reauthenticate`
         goes out and no reconnect happens
   - [ ] Live check with `cmd/smoke` against dev with the site's

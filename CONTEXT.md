@@ -20,6 +20,13 @@ Obtaining a fresh chat JWT from the site mid-session. Recurs hourly
 because the chat server hard-closes sockets when the JWT lapses.
 _Avoid_: refresh, renew
 
+**Revalidate**:
+The server's nudge two minutes before the hard-close deadline. The client
+re-mints and answers with `reauthenticate`; the server swaps the socket's
+claims in place and replies `revalidated`. Ignoring it costs nothing but
+the reconnect. The deadline itself never moves.
+_Avoid_: refresh, keep-alive
+
 **Channel**:
 A named, server-defined chat room joined by name lookup then numeric-ID
 subscription. Clients cannot create channels.

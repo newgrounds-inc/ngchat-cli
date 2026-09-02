@@ -19,6 +19,23 @@ func NewAuthenticate(token string) Authenticate {
 	return Authenticate{Name: "authenticate", Token: token}
 }
 
+// Reauthenticate answers a server Revalidate with a freshly minted chat
+// JWT. It is deliberately not Authenticate: the server replaces the
+// socket's claim snapshot in place instead of re-running the
+// join/subscribe/motd pipeline, and Authenticate's already-authenticated
+// guard stays. The server refuses a token for a different account or one
+// whose expiry is not strictly later than the token in force, and caps
+// attempts per token (~5), so send at most one per Revalidate.
+type Reauthenticate struct {
+	Name  string `json:"name"`
+	Token string `json:"token"`
+}
+
+// NewReauthenticate builds the in-place renewal message.
+func NewReauthenticate(token string) Reauthenticate {
+	return Reauthenticate{Name: "reauthenticate", Token: token}
+}
+
 // ChatMessage sends a chat line (1..5000 chars) to a subscribed channel.
 // Slash commands (/me, /dm, ...) are plain message text parsed server-side.
 type ChatMessage struct {

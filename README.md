@@ -4,7 +4,7 @@ Newgrounds Chat in your terminal. A minimalist Go client: one static
 binary for macOS, Linux, and Windows.
 
 **Status: scaffold.** Connects, chats in one channel, renders formatted
-messages, survives the hourly token bounce. Images (Kitty graphics
+messages, renews its token in place every hour. Images (Kitty graphics
 protocol), channel switching, and presence are on the roadmap.
 
 ## Install

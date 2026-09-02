@@ -90,19 +90,53 @@ func TestDecodeKnownNames(t *testing.T) {
 					t.Errorf("got %#v", v)
 				}
 			}},
-		{"kicked",
-			`{"name":"kicked","message":"bye"}`,
+		{"userUpdated",
+			`{"name":"userUpdated","channelID":3,"username":"bob","isChatMod":true,"isAway":true,"awayMessage":"brb"}`,
+			func(t *testing.T, v any) {
+				u, ok := v.(UserUpdated)
+				if !ok || u.Username != "bob" || !u.IsChatMod || !u.IsAway ||
+					u.AwayMessage != "brb" {
+					t.Errorf("got %#v", v)
+				}
+			}},
+		{"kicked with reason",
+			`{"name":"kicked","reason":"bye","kickedByUserID":5,"channelID":3}`,
 			func(t *testing.T, v any) {
 				k, ok := v.(Kicked)
-				if !ok || k.Message != "bye" {
+				if !ok || k.Reason != "bye" || k.KickedByUserID != 5 {
+					t.Errorf("got %#v", v)
+				}
+			}},
+		{"kicked without reason",
+			`{"name":"kicked","serverTime":1}`,
+			func(t *testing.T, v any) {
+				k, ok := v.(Kicked)
+				if !ok || k.Reason != "" {
 					t.Errorf("got %#v", v)
 				}
 			}},
 		{"idleTimeout",
-			`{"name":"idleTimeout"}`,
+			`{"name":"idleTimeout","reason":"no activity for 24h"}`,
 			func(t *testing.T, v any) {
-				if _, ok := v.(IdleTimeout); !ok {
-					t.Errorf("got %T", v)
+				i, ok := v.(IdleTimeout)
+				if !ok || i.Reason != "no activity for 24h" {
+					t.Errorf("got %#v", v)
+				}
+			}},
+		{"revalidate",
+			`{"name":"revalidate","serverTime":1700000000000}`,
+			func(t *testing.T, v any) {
+				r, ok := v.(Revalidate)
+				if !ok || r.ServerTime != 1700000000000 {
+					t.Errorf("got %#v", v)
+				}
+			}},
+		{"revalidated",
+			`{"name":"revalidated","isAdmin":false,"isChatMod":true,"isSiteMod":false,"serverTime":1}`,
+			func(t *testing.T, v any) {
+				r, ok := v.(Revalidated)
+				if !ok || r.IsAdmin || !r.IsChatMod {
+					t.Errorf("got %#v", v)
 				}
 			}},
 	}

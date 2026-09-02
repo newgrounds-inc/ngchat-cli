@@ -94,11 +94,22 @@ type TypingEvent struct {
 
 // UserJoined reports a user entering a channel.
 type UserJoined struct {
-	ChannelID  int    `json:"channelID"`
-	UserID     int    `json:"userID"`
-	Username   string `json:"username"`
-	ServerTime int64  `json:"serverTime"`
+	ChannelID   int    `json:"channelID"`
+	UserID      int    `json:"userID"`
+	Username    string `json:"username"`
+	IsAdmin     bool   `json:"isAdmin"`
+	IsChatMod   bool   `json:"isChatMod"`
+	IsAway      bool   `json:"isAway"`
+	AwayMessage string `json:"awayMessage"`
+	ServerTime  int64  `json:"serverTime"`
 }
+
+// UserUpdated is a silent roster patch: the same shape as UserJoined but
+// for a user already in the channel (a mid-session role or away change,
+// typically published by an in-place token renewal). It must not be
+// announced as a join, and an unknown username is ignored rather than
+// added.
+type UserUpdated UserJoined
 
 // UserLeft reports a user leaving a channel.
 type UserLeft struct {
@@ -113,14 +124,37 @@ type Pong struct {
 	Data PingData `json:"data"`
 }
 
-// Kicked precedes a server-initiated disconnect of this user.
+// Kicked precedes a server-initiated disconnect of this user. Reason is
+// optional on the wire; KickedByUserID is 0 for a system kick.
 type Kicked struct {
-	Message string `json:"message"`
+	ChannelID      int    `json:"channelID"`
+	KickedByUserID int    `json:"kickedByUserID"`
+	Reason         string `json:"reason"`
 }
 
 // IdleTimeout precedes a disconnect for 24h without chatting; the close
 // reason "idle timeout" must not trigger auto-reconnect.
-type IdleTimeout struct{}
+type IdleTimeout struct {
+	Reason string `json:"reason"`
+}
+
+// Revalidate is the server's nudge shortly before the chat JWT's hard
+// close deadline. Answering with Reauthenticate carrying a fresh token
+// swaps the socket's claims in place; ignoring it leaves the unchanged
+// close-and-reconnect path, since the deadline never moves.
+type Revalidate struct {
+	ServerTime int64 `json:"serverTime"`
+}
+
+// Revalidated acknowledges a successful Reauthenticate. The privilege
+// flags come from the new token and replace those from Authenticated, so
+// a mod demoted on the site loses the flags without reconnecting.
+type Revalidated struct {
+	IsAdmin    bool  `json:"isAdmin"`
+	IsChatMod  bool  `json:"isChatMod"`
+	IsSiteMod  bool  `json:"isSiteMod"`
+	ServerTime int64 `json:"serverTime"`
+}
 
 // Unknown is any frame this client does not (yet) understand, including
 // known names whose payload failed to decode. Callers must treat it as
@@ -165,12 +199,18 @@ func Decode(data []byte) any {
 		return deref(as(&UserJoined{}))
 	case "userLeft":
 		return deref(as(&UserLeft{}))
+	case "userUpdated":
+		return deref(as(&UserUpdated{}))
+	case "revalidate":
+		return deref(as(&Revalidate{}))
+	case "revalidated":
+		return deref(as(&Revalidated{}))
 	case "pong":
 		return deref(as(&Pong{}))
 	case "kicked":
 		return deref(as(&Kicked{}))
 	case "idleTimeout":
-		return IdleTimeout{}
+		return deref(as(&IdleTimeout{}))
 	default:
 		return Unknown{Name: env.Name}
 	}
@@ -203,6 +243,14 @@ func deref(v any) any {
 	case *Pong:
 		return *t
 	case *Kicked:
+		return *t
+	case *IdleTimeout:
+		return *t
+	case *UserUpdated:
+		return *t
+	case *Revalidate:
+		return *t
+	case *Revalidated:
 		return *t
 	default:
 		return v

@@ -46,6 +46,14 @@ type Event struct {
 	Err error
 }
 
+// RenewalFailed is emitted as Event.Msg when the client could not answer
+// a server Revalidate (the re-mint failed). It is informational: the
+// server's close timer is still armed, and the ordinary reconnect path
+// takes over at expiry.
+type RenewalFailed struct {
+	Err error
+}
+
 // Config wires a Client.
 type Config struct {
 	WSURL   string
@@ -65,6 +73,11 @@ const (
 	readTimeout    = 20 * time.Second
 	maxAuthRetries = 3
 	maxBackoff     = 30 * time.Second
+	// renewalMintTimeout bounds the re-mint done inline in the read loop
+	// on Revalidate. The heartbeat goroutine keeps the socket alive
+	// meanwhile, but inbound frames queue until the mint returns, so
+	// this stays well under the two-minute window the server allows.
+	renewalMintTimeout = 15 * time.Second
 	// dedupeWindow bounds the remembered message IDs used to collapse
 	// reconnect backfill against what was already displayed.
 	dedupeWindow = 500
@@ -180,12 +193,16 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 	go c.heartbeat(sessionCtx)
 
 	authRetries := 0
+	idleReason := ""
 	for {
 		readCtx, cancelRead := context.WithTimeout(ctx, readTimeout)
 		_, data, err := conn.Read(readCtx)
 		cancelRead()
 		if err != nil {
 			if reason := closeReason(err); noReconnectReasons[reason] {
+				if reason == "idle timeout" && idleReason != "" {
+					reason += ": " + idleReason
+				}
 				return established, &stopError{reason: reason}
 			}
 			return established, err
@@ -229,8 +246,31 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 				c.emit(ctx, Event{Msg: msg, State: StateOnline})
 			}
 		case protocol.Kicked:
-			return established, &stopError{
-				reason: "kicked: " + msg.Message,
+			reason := "kicked"
+			if msg.Reason != "" {
+				reason += ": " + msg.Reason
+			}
+			return established, &stopError{reason: reason}
+		case protocol.IdleTimeout:
+			// The close frame that follows carries only "idle timeout";
+			// keep the server's explanation for the stop error.
+			idleReason = msg.Reason
+		case protocol.Revalidate:
+			// Exactly one attempt per nudge. The server caps attempts per
+			// token and the site's mint limiter counts before auth, so a
+			// retry loop here would also lock the user's browser out.
+			mintCtx, cancelMint := context.WithTimeout(ctx, renewalMintTimeout)
+			token, err := c.cfg.Minter.Mint(mintCtx)
+			cancelMint()
+			if err != nil {
+				c.emit(ctx, Event{
+					Msg:   RenewalFailed{Err: err},
+					State: StateOnline,
+				})
+				continue
+			}
+			if err := c.send(ctx, protocol.NewReauthenticate(token)); err != nil {
+				return established, err
 			}
 		case protocol.Pong, protocol.Unknown:
 			// Heartbeat replies and unrecognized frames are dropped;

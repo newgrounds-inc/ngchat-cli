@@ -17,6 +17,8 @@ func TestClientMessageWireFormat(t *testing.T) {
 	}{
 		{"authenticate", NewAuthenticate("tok"),
 			`{"name":"authenticate","token":"tok"}`},
+		{"reauthenticate", NewReauthenticate("tok"),
+			`{"name":"reauthenticate","token":"tok"}`},
 		{"message", NewChatMessage(42, "hi"),
 			`{"name":"message","channelID":42,"message":"hi"}`},
 		{"getChannelID", NewGetChannelID("general"),

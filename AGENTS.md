@@ -55,9 +55,16 @@ with exponential backoff; `session` does mint → dial → `authenticate` →
 `getChannelID` → `subscribe`, then reads frames until the socket dies.
 Three behaviors are load-bearing:
 
-- *Hourly JWT bounce.* The chat JWT lives 1 hour and the server hard-closes
-  the socket when it lapses. Reconnect + backfill dedupe (`markSeen`, a
-  500-ID window) make that invisible to the UI.
+- *Hourly renewal in place.* The chat JWT lives 1 hour. Two minutes before
+  its hard-close deadline the server sends `revalidate`; the client
+  re-mints once and answers `reauthenticate`, and `revalidated` confirms
+  with the new privilege flags. Exactly one attempt per nudge: the server
+  caps attempts per token and the site's mint limiter counts before auth,
+  so a loop would lock the user's browser out too. A failed mint is a
+  `RenewalFailed` event, never fatal, because the deadline never moves:
+  the server still closes the socket and the reconnect + backfill dedupe
+  (`markSeen`, a 500-ID window) path takes over, as it did before renewal
+  existed.
 - *Gap detection.* `Subscribed` carries ≤25 recent events, the only history
   a client ever gets. If a reconnect's backfill shares no IDs with what was
   already displayed, `Event.Gap` is set and the loss is surfaced, not
