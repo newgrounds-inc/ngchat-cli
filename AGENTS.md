@@ -23,8 +23,13 @@ export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws
 export NGCHAT_JWT_URL=https://www.newgrounds-d.com/ngapps/jwt.php
 export NGCHAT_ROUTING_COOKIE='serverid=...'   # dev proxy routing, every request
 export SMOKE_NG_COOKIE='...'                  # NG session/remember cookie
+export SMOKE_SECONDS=150                      # optional; default 15
 go run ./cmd/smoke
 ```
+
+To watch a token renewal, set `APP_JWT_CHAT_TTL` to ~90 seconds on the
+dev site and run with `SMOKE_SECONDS=150`: expect a `revalidated` line
+and no `state=2` (reconnecting) line.
 
 The TUI takes over the screen, so `cmd/smoke` is the right tool for
 verifying protocol or auth changes; reserve `cmd/ngchat` for UI work.

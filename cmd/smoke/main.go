@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
@@ -23,7 +24,15 @@ func main() {
 		Cookie:   routing,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// SMOKE_SECONDS extends the run for renewal checks: with the site's
+	// APP_JWT_CHAT_TTL at ~90s, 150s is enough to see revalidate →
+	// revalidated without a reconnect.
+	seconds := 15
+	if v, err := strconv.Atoi(os.Getenv("SMOKE_SECONDS")); err == nil && v > 0 {
+		seconds = v
+	}
+	ctx, cancel := context.WithTimeout(context.Background(),
+		time.Duration(seconds)*time.Second)
 	defer cancel()
 
 	c := client.New(client.Config{
