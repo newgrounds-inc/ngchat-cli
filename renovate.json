@@ -1,0 +1,26 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "enabledManagers": ["gomod", "github-actions"],
+  "minimumReleaseAge": "3 days",
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "Deny by default. config:recommended ships managers of its own, so opt in explicitly instead, and a preset change can never widen scope on its own.",
+      "enabled": false,
+      "matchPackageNames": ["*"]
+    },
+    {
+      "description": "Go modules and the go directive in go.mod, which CI's setup-go reads through go-version-file.",
+      "enabled": true,
+      "groupName": "go modules",
+      "matchManagers": ["gomod"]
+    },
+    {
+      "description": "Actions are pinned to a commit SHA with the tag in a trailing comment; Renovate bumps both.",
+      "enabled": true,
+      "groupName": "github actions",
+      "matchManagers": ["github-actions"]
+    }
+  ]
+}
