@@ -3,9 +3,11 @@
 Newgrounds Chat in your terminal. A minimalist Go client: one static
 binary for macOS, Linux, and Windows.
 
-**Status: scaffold.** Connects, chats in one channel, renders formatted
-messages, renews its token in place every hour. Images (Kitty graphics
-protocol), channel switching, and presence are on the roadmap.
+Chats in `#general`, renders formatted messages, shows who is around,
+pings you on mentions, and renews its token in place every hour so an
+evening's session never drops. Images (Kitty graphics protocol) and
+channel switching are on the roadmap; see [CHANGELOG.md](CHANGELOG.md)
+for what each release added.
 
 ## Install
 
@@ -15,12 +17,18 @@ Grab a binary from [Releases](../../releases), or:
 go install github.com/newgrounds-inc/ngchat-cli/cmd/ngchat@latest
 ```
 
+Each release ships a `checksums.txt` next to the archives. The Linux
+and macOS tests gate every release. Windows builds are best-effort: they
+are published and CI runs the tests there, but nobody exercises the TUI
+on Windows regularly, so use Windows Terminal and report what breaks.
+
 ## Use
 
 ```sh
 ngchat            # join #general
 ngchat -quiet     # same, without the terminal bell on mentions and DMs
 ngchat -debug     # also write redacted frames to a log; path printed on exit
+ngchat -version   # print the version and exit
 ```
 
 The first run asks for your username or email, password, and a
@@ -74,6 +82,10 @@ export NGCHAT_ROUTING_COOKIE='serverid=bcolby2'   # dev proxy routing (this proj
 `NGCHAT_NG_COOKIE` (a raw cookie header) bypasses the stored login.
 
 Design notes live in [CONTEXT.md](CONTEXT.md) and [docs/adr/](docs/adr/).
+CI runs vet, the race tests, and a GoReleaser snapshot build on every
+pull request and push to `main`; a `v*` tag reruns the Linux and macOS
+tests and cuts a release. Security reports:
+see [SECURITY.md](SECURITY.md).
 
 ## License
 
