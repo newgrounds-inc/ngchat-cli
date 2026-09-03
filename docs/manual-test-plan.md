@@ -151,6 +151,17 @@ screen or a reconnect loop.
       but silent.
 - [ ] The notifications inbox replays on the first subscribe only
       (newest 10, faint); a reconnect does not replay it.
+- [ ] `@` alone opens a list of everyone in the room but you,
+      alphabetical, away users dimmed.
+- [ ] `@al` narrows the list and `tab` cycles the highlight.
+- [ ] `enter` inserts `@name ` and sends nothing until `enter` is
+      pressed again.
+- [ ] `esc` closes the list, and typing more into the same word does
+      not reopen it.
+- [ ] The other client joining or leaving shows up in the next list you
+      open, with no restart needed.
+- [ ] A 40×8 window previews the highlighted candidate in the input
+      line instead of drawing a list.
 
 ## 6. Renewal and reconnect (once, `-debug` on)
 

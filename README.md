@@ -75,6 +75,10 @@ to go back.
 
 - `ctrl+s` reveals spoilers, `ctrl+t` toggles timestamps, `pgup/pgdn`
   scrolls, `ctrl+c` quits.
+- Typing `@` opens a completion list of the room's users (`tab`/
+  `shift+tab` or the up/down arrows move, `enter` accepts, `esc`
+  closes; a window under about 9 rows previews the candidate in the
+  line instead).
 - `/who` lists who is in the channel (mods marked `@`, away users
   dimmed). Every other slash command (`/me`, `/slap`, `/dm`, `/roll`,
   ...) goes to the server, which parses them.

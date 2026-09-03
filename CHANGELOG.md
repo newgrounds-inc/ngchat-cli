@@ -31,6 +31,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The server's entry-gate notice (not a supporter, under 18, e-mail not
   validated, banned) and a refused subscribe are shown on exit instead
   of a blank screen.
+- Typing `@` opens a completion list from the room's live user list:
+  `tab`/`shift+tab` or the up/down arrows cycle it, `enter` accepts and
+  `esc` closes; a window too short for the list previews the
+  highlighted candidate in the input line instead.
 - CI on every pull request and push to `main` (vet, race tests on
   Linux, macOS and best-effort Windows, `go mod tidy` drift, GoReleaser
   snapshot build); the release workflow runs the Linux and macOS tests

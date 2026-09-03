@@ -41,15 +41,15 @@ this extends), `newgrounds-inc/ngchat`
 
 ### Phase 1: mentions
 
-- [ ] `complete.Mentions` over the roster: trigger `\B@` with term
+- [x] `complete.Mentions` over the roster: trigger `\B@` with term
       `[a-zA-Z0-9-!*]*`, empty term allowed, self excluded, away users
       kept and dimmed, alphabetical when the term is empty, replacement
       `@name ` with the trailing space.
-- [ ] Roster feed: the source reads the model's `users` map at query
+- [x] Roster feed: the source reads the model's `users` map at query
       time so joins and leaves are reflected without a hook.
-- [ ] Tests: self excluded, away dimmed, bare `@` sorted like `/who`,
+- [x] Tests: self excluded, away dimmed, bare `@` sorted like `/who`,
       `\B` refuses `foo@bar`, `@!` typed by hand is left alone.
-- [ ] Docs: README key list, `docs/manual-test-plan.md` §5 rows,
+- [x] Docs: README key list, `docs/manual-test-plan.md` §5 rows,
       `CHANGELOG.md`.
 
 ### Phase 2: commands
