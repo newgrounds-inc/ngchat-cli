@@ -263,7 +263,7 @@ func (m *Model) handleEvent(e client.Event) {
 		// The status bar is one truncated line; the transcript row is
 		// where the full reason can be read.
 		if e.Err != nil {
-			m.pushEvent(errorStyle.Render("disconnected: "+e.Err.Error()), 0)
+			m.pushEvent(errorStyle.Render("disconnected: "+render.Line(e.Err.Error())), 0)
 		}
 	case client.StateReconnecting:
 		m.retryErr = e.Err
@@ -293,20 +293,20 @@ func (m *Model) handleEvent(e client.Event) {
 	case protocol.Message:
 		m.pushMessage(msg, e.Backfill)
 	case protocol.TypingEvent:
-		if msg.Username != "" && msg.Username != m.self {
-			m.typing[msg.Username] = typingState{msg.Username, time.Now()}
+		if name := render.Line(msg.Username); name != "" && name != m.self {
+			m.typing[name] = typingState{name, time.Now()}
 		}
 	case protocol.UserJoined:
 		m.users[msg.UserID] = rosterEntry(msg)
-		m.pushEvent(eventStyle.Render(msg.Username+" joined"), msg.ServerTime)
+		m.pushEvent(eventStyle.Render(render.Line(msg.Username)+" joined"), msg.ServerTime)
 	case protocol.UserUpdated:
 		// A silent roster patch: never a join notice (ADR 0002 drift note
 		// on the upstream schema).
 		m.users[msg.UserID] = rosterEntry(protocol.UserJoined(msg))
 	case protocol.UserLeft:
 		delete(m.users, msg.UserID)
-		m.pushEvent(eventStyle.Render(msg.Username+" left"), msg.ServerTime)
-		delete(m.typing, msg.Username)
+		m.pushEvent(eventStyle.Render(render.Line(msg.Username)+" left"), msg.ServerTime)
+		delete(m.typing, render.Line(msg.Username))
 	case protocol.Away:
 		u, known := m.users[msg.UserID]
 		if !known {
@@ -325,14 +325,14 @@ func (m *Model) handleEvent(e client.Event) {
 		// divider appears.
 	case client.RenewalFailed:
 		m.pushEvent(eventStyle.Render(
-			"token renewal failed ("+msg.Err.Error()+
+			"token renewal failed ("+render.Line(msg.Err.Error())+
 				"); will reconnect when the current token expires"), 0)
 	case protocol.Unauthorized:
 		// Only reaches the UI after authentication, right before the
 		// server closes the socket (expiry or a rejected renewal).
-		m.pushEvent(eventStyle.Render(msg.Message), 0)
+		m.pushEvent(eventStyle.Render(render.Line(msg.Message)), 0)
 	case protocol.Error:
-		m.pushEvent(errorStyle.Render(msg.Message), 0)
+		m.pushEvent(errorStyle.Render(render.Line(msg.Message)), 0)
 	}
 }
 
@@ -353,10 +353,11 @@ func rosterEntry(u protocol.UserJoined) protocol.ChannelUser {
 
 // awayText phrases an away frame as an event row.
 func awayText(a protocol.Away) string {
+	name := render.Line(a.Username)
 	if !a.IsAway {
-		return eventStyle.Render(a.Username + " is back")
+		return eventStyle.Render(name + " is back")
 	}
-	text := a.Username + " is away"
+	text := name + " is away"
 	if a.AwayMessage != "" {
 		text += ": " + render.Text(a.AwayMessage)
 	}
@@ -371,7 +372,7 @@ func (m *Model) pushNotices(notes []protocol.Notification) {
 	}
 	for i := len(notes) - 1; i >= 0; i-- {
 		n := notes[i]
-		who := n.Username
+		who := render.Line(n.Username)
 		if who == "" {
 			who = "someone"
 		}
@@ -412,7 +413,7 @@ func (m *Model) pushMessage(msg protocol.Message, backfill bool) {
 	case "directMessage":
 		kind = "dm"
 	}
-	delete(m.typing, msg.Username)
+	delete(m.typing, render.Line(msg.Username))
 	mention := m.addressedToMe(msg)
 	if mention && !backfill && !m.quiet {
 		_, _ = io.WriteString(m.bell, "\a")
@@ -511,7 +512,7 @@ func (m *Model) renderItem(it item) string {
 		}
 		return prefix + eventStyle.Render(render.Text(it.html))
 	case "me", "slap":
-		return prefix + eventStyle.Render("* "+it.username+" "+
+		return prefix + eventStyle.Render("* "+render.Line(it.username)+" "+
 			render.Text(it.html))
 	}
 
@@ -525,7 +526,7 @@ func (m *Model) renderItem(it item) string {
 	if it.mention {
 		name = mentionStyle
 	}
-	speaker := name.Render("<" + it.username + ">")
+	speaker := name.Render("<" + render.Line(it.username) + ">")
 	if it.kind == "dm" {
 		speaker = dmStyle.Render("[DM] ") + speaker
 	}
@@ -591,7 +592,7 @@ func (m Model) whoText() string {
 	})
 	names := make([]string, 0, len(users))
 	for _, u := range users {
-		name := u.Username
+		name := render.Line(u.Username)
 		if u.IsAdmin || u.IsChatMod {
 			name = "@" + name
 		}
@@ -617,12 +618,12 @@ func (m Model) stateLabel() string {
 		return "online"
 	case client.StateReconnecting:
 		if m.retryErr != nil {
-			return "reconnecting… (" + m.retryErr.Error() + ")"
+			return "reconnecting… (" + render.Line(m.retryErr.Error()) + ")"
 		}
 		return "reconnecting…"
 	case client.StateStopped:
 		if m.stopErr != nil {
-			return "disconnected: " + m.stopErr.Error()
+			return "disconnected: " + render.Line(m.stopErr.Error())
 		}
 		return "disconnected"
 	default:

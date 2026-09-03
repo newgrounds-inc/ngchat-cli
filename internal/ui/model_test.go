@@ -529,3 +529,45 @@ func TestNoticesShownOncePerRun(t *testing.T) {
 		t.Errorf("a reconnect replayed the inbox again: %d rows", len(m.items))
 	}
 }
+
+// TestNetworkTextCannotDriveTheTerminal: usernames, close reasons and
+// server messages bypass the HTML renderer, so they get the same
+// control stripping on their own way to the screen.
+func TestNetworkTextCannotDriveTheTerminal(t *testing.T) {
+	const evil = "bob\x1b[2J\x1b]52;c;xxx\x07\nmallory"
+	m := newModel()
+	m.handleEvent(client.Event{State: client.StateOnline,
+		Msg: protocol.UserJoined{UserID: 1, Username: evil}})
+	m.handleEvent(client.Event{State: client.StateOnline,
+		Msg: protocol.Message{Name: "message", ID: ptr(int64(1)),
+			Username: evil, Message: "hi"}})
+	m.handleEvent(client.Event{State: client.StateOnline,
+		Msg: protocol.Message{Name: "meMessage", ID: ptr(int64(2)),
+			Username: evil, Message: "waves"}})
+	m.handleEvent(client.Event{State: client.StateOnline,
+		Msg: protocol.Message{Name: "slapMessage", ID: ptr(int64(3)),
+			Username: evil, Message: "slaps"}})
+	m.handleEvent(client.Event{State: client.StateOnline,
+		Msg: protocol.Error{Message: evil}})
+	m.handleEvent(client.Event{State: client.StateOnline,
+		Msg: protocol.Away{UserID: 1, Username: evil, IsAway: true}})
+	if len(m.items) != 6 {
+		t.Fatalf("got %d rows, want 6", len(m.items))
+	}
+	for _, it := range m.items {
+		got := m.renderItem(it)
+		if p := plain(got); strings.ContainsAny(p, "\x1b\x07\n") {
+			t.Errorf("%s row %q carries a control or a forged line", it.kind, got)
+		}
+	}
+	m.handleEvent(client.Event{State: client.StateStopped,
+		Err: errors.New(evil)})
+	if got := plain(m.stateLabel()); strings.ContainsAny(got, "\x1b\x07\n") {
+		t.Errorf("status %q carries a control", got)
+	}
+	if got := plain(m.whoText()); strings.ContainsAny(got, "\x1b\x07\n") {
+		t.Errorf("who %q carries a control", got)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
