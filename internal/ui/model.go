@@ -22,6 +22,8 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 	"github.com/newgrounds-inc/ngchat-cli/internal/render"
+	"github.com/newgrounds-inc/ngchat-cli/internal/splash"
+	"github.com/newgrounds-inc/ngchat-cli/internal/theme"
 )
 
 const (
@@ -37,24 +39,51 @@ const (
 	maxNotices = 10
 )
 
-var (
-	statusStyle = lipgloss.NewStyle().Reverse(true).Padding(0, 1)
-	userStyle   = lipgloss.NewStyle().Bold(true).
-			Foreground(lipgloss.Color("10"))
-	modUserStyle = lipgloss.NewStyle().Bold(true).
-			Foreground(lipgloss.Color("11"))
-	selfStyle = lipgloss.NewStyle().Bold(true).
-			Foreground(lipgloss.Color("14"))
-	mentionStyle = lipgloss.NewStyle().Bold(true).Reverse(true).
-			Foreground(lipgloss.Color("11"))
-	dmStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	eventStyle   = lipgloss.NewStyle().Faint(true).Italic(true)
-	spoilerStyle = lipgloss.NewStyle().Faint(true)
-	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	helpStyle    = lipgloss.NewStyle().Faint(true)
-	timeStyle    = lipgloss.NewStyle().Faint(true)
-	awayStyle    = lipgloss.NewStyle().Faint(true)
+const (
+	// frameRate paces the splash; 30 fps is smooth for a sweep and
+	// well under what a remote terminal chokes on.
+	frameRate = 33 * time.Millisecond
+	// maxSplash bounds how long the finished animation holds while the
+	// client is still connecting. Past it the chat screen's own
+	// "connecting…" status is more honest than a logo.
+	maxSplash = 4 * time.Second
 )
+
+// styles is every lipgloss style the screen uses, built once from the
+// theme. Widgets name a role (user, mod, mention), never a color, so a
+// theme swap touches nothing below this.
+type styles struct {
+	status, user, modUser, self, mention, dm, event, spoiler, err,
+	help, time, away lipgloss.Style
+}
+
+// newStyles maps theme roles onto the transcript. The status bar and
+// the mention highlight carry Reverse on top of their colors: under
+// NO_COLOR the renderer drops the colors but keeps the attribute, so
+// both still read as a bar. (TERM=dumb is the NoTTY profile, which
+// drops every attribute too; there they are plain text.) Reverse swaps
+// foreground and background, so those two pairs are declared swapped.
+func newStyles(t theme.Theme) styles {
+	faint := lipgloss.NewStyle().Faint(true)
+	return styles{
+		status: lipgloss.NewStyle().Reverse(true).Padding(0, 1).
+			Foreground(t.Primary).Background(t.PrimaryContent),
+		user:    lipgloss.NewStyle().Bold(true).Foreground(t.Username),
+		modUser: lipgloss.NewStyle().Bold(true).Foreground(t.Secondary),
+		// Self is the one cool color in a warm transcript, so your own
+		// lines are found at a glance.
+		self: lipgloss.NewStyle().Bold(true).Foreground(t.Info),
+		mention: lipgloss.NewStyle().Bold(true).Reverse(true).
+			Foreground(t.Warning).Background(t.WarningContent),
+		dm:      lipgloss.NewStyle().Bold(true).Foreground(t.Accent),
+		event:   faint.Italic(true),
+		spoiler: faint,
+		err:     lipgloss.NewStyle().Foreground(t.Error),
+		help:    faint,
+		time:    faint,
+		away:    faint,
+	}
+}
 
 // item is one rendered row of the transcript.
 type item struct {
@@ -80,6 +109,23 @@ type Options struct {
 	Channel string
 	// Quiet suppresses the terminal bell on mentions and DMs.
 	Quiet bool
+	// Theme colors the screen; the zero value means theme.Default().
+	Theme theme.Theme
+	// Splash is the opening animation; nil plays none.
+	Splash splash.Effect
+}
+
+// splashState is the opening animation in flight. The clock is the
+// tea.Tick timestamps, not time.Now, so a test can drive it to any
+// instant.
+type splashState struct {
+	effect  splash.Effect
+	palette splash.Palette
+	base    splash.Art // the wordmark at scale 1
+	art     splash.Art // base fitted to the terminal; zero until sized
+	fits    bool
+	start   time.Time
+	elapsed time.Duration
 }
 
 // Model is the Bubble Tea root model.
@@ -108,6 +154,11 @@ type Model struct {
 	vp    viewport.Model
 	input textinput.Model
 	ready bool
+
+	st            styles
+	width, height int
+	// splash is non-nil only while the opening animation plays.
+	splash *splashState
 }
 
 // New builds the UI over a running chat client.
@@ -116,7 +167,11 @@ func New(chat *client.Client, opts Options) Model {
 	input.Placeholder = "message #" + opts.Channel
 	input.CharLimit = maxMessageLength
 	input.Focus()
-	return Model{
+	th := opts.Theme
+	if th.Name == "" {
+		th = theme.Default()
+	}
+	m := Model{
 		chat:    chat,
 		channel: opts.Channel,
 		quiet:   opts.Quiet,
@@ -124,7 +179,17 @@ func New(chat *client.Client, opts Options) Model {
 		input:   input,
 		typing:  map[string]typingState{},
 		users:   map[int]protocol.ChannelUser{},
+		st:      newStyles(th),
 	}
+	if opts.Splash != nil {
+		m.splash = &splashState{
+			effect:  opts.Splash,
+			palette: splash.FromTheme(th),
+			base:    splash.Wordmark(),
+			start:   time.Now(),
+		}
+	}
+	return m
 }
 
 // tickMsg drives typing-indicator expiry.
@@ -133,6 +198,16 @@ type tickMsg time.Time
 func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
+	})
+}
+
+// frameMsg advances the splash. Frames are scheduled one at a time,
+// like tick, so ending the splash stops the clock with it.
+type frameMsg time.Time
+
+func frame() tea.Cmd {
+	return tea.Tick(frameRate, func(t time.Time) tea.Msg {
+		return frameMsg(t)
 	})
 }
 
@@ -149,17 +224,40 @@ func waitEvent(ch <-chan client.Event) tea.Cmd {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitEvent(m.chat.Events()), tick(), textinput.Blink)
+	cmds := []tea.Cmd{waitEvent(m.chat.Events()), tick(), textinput.Blink}
+	if m.splash != nil {
+		cmds = append(cmds, frame())
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
 		m.layout(msg.Width, msg.Height)
+		m.fitSplash()
 		return m, nil
 
+	case frameMsg:
+		if m.splash == nil {
+			return m, nil
+		}
+		m.splash.elapsed = time.Time(msg).Sub(m.splash.start)
+		if m.splashOver() {
+			m.endSplash()
+			return m, nil
+		}
+		return m, frame()
+
 	case tea.KeyPressMsg:
+		// Any key skips the splash and is spent doing so; only quit
+		// passes through, so ctrl+c never has to be pressed twice.
+		if m.splash != nil && msg.String() != "ctrl+c" {
+			m.endSplash()
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -189,7 +287,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if err := m.chat.SendChat(text); err != nil {
 				m.push(item{kind: "event",
-					text: errorStyle.Render("send failed: " + err.Error())})
+					text: m.st.err.Render("send failed: " + err.Error())})
 				return m, nil
 			}
 			m.input.Reset()
@@ -221,6 +319,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitEvent(m.chat.Events())
 	}
 	return m, nil
+}
+
+// fitSplash sizes the wordmark to the terminal, leaving room for the
+// two caption lines and a margin. A terminal too small for scale 1 gets
+// no splash rather than a clipped one.
+func (m *Model) fitSplash() {
+	if m.splash == nil {
+		return
+	}
+	art, ok := splash.Fit(m.splash.base, m.width-2, m.height-4)
+	if !ok {
+		m.endSplash()
+		return
+	}
+	m.splash.art, m.splash.fits = art, true
+}
+
+// splashOver is when the animation has finished and the client is
+// online, or has finished and waited maxSplash for it.
+func (m Model) splashOver() bool {
+	s := m.splash
+	if s.elapsed < s.effect.Duration() {
+		return false
+	}
+	return m.state == client.StateOnline || s.elapsed >= maxSplash
+}
+
+// endSplash hands the screen to the chat layout, which has been kept
+// current underneath all along.
+func (m *Model) endSplash() {
+	m.splash = nil
+	m.refresh(false)
 }
 
 // SignedOut reports whether the client stopped because the site refused
@@ -263,7 +393,7 @@ func (m *Model) handleEvent(e client.Event) {
 		// The status bar is one truncated line; the transcript row is
 		// where the full reason can be read.
 		if e.Err != nil {
-			m.pushEvent(errorStyle.Render("disconnected: "+render.Line(e.Err.Error())), 0)
+			m.pushEvent(m.st.err.Render("disconnected: "+render.Line(e.Err.Error())), 0)
 		}
 	case client.StateReconnecting:
 		m.retryErr = e.Err
@@ -279,7 +409,7 @@ func (m *Model) handleEvent(e client.Event) {
 		// Below the history so it is the first thing read on join, like
 		// the site's banner, rather than scrolled off by the backfill.
 		if m.motd != "" {
-			m.pushEvent(eventStyle.Render(render.Text(m.motd)), 0)
+			m.pushEvent(m.st.event.Render(render.Text(m.motd)), 0)
 		}
 	case protocol.Subscribed:
 		m.users = make(map[int]protocol.ChannelUser, len(msg.UserList))
@@ -298,14 +428,14 @@ func (m *Model) handleEvent(e client.Event) {
 		}
 	case protocol.UserJoined:
 		m.users[msg.UserID] = rosterEntry(msg)
-		m.pushEvent(eventStyle.Render(render.Line(msg.Username)+" joined"), msg.ServerTime)
+		m.pushEvent(m.st.event.Render(render.Line(msg.Username)+" joined"), msg.ServerTime)
 	case protocol.UserUpdated:
 		// A silent roster patch: never a join notice (ADR 0002 drift note
 		// on the upstream schema).
 		m.users[msg.UserID] = rosterEntry(protocol.UserJoined(msg))
 	case protocol.UserLeft:
 		delete(m.users, msg.UserID)
-		m.pushEvent(eventStyle.Render(render.Line(msg.Username)+" left"), msg.ServerTime)
+		m.pushEvent(m.st.event.Render(render.Line(msg.Username)+" left"), msg.ServerTime)
 		delete(m.typing, render.Line(msg.Username))
 	case protocol.Away:
 		u, known := m.users[msg.UserID]
@@ -317,22 +447,22 @@ func (m *Model) handleEvent(e client.Event) {
 		u.AwayMessage = msg.AwayMessage
 		u.AwayMessageRaw = msg.AwayMessageRaw
 		m.users[msg.UserID] = u
-		m.pushEvent(awayText(msg), msg.ServerTime)
+		m.pushEvent(m.awayText(msg), msg.ServerTime)
 	case protocol.Revalidated:
 		// The socket renewed its token in place; the flags on this
 		// message now describe self. Nothing in the transcript depends on
 		// them yet, so the only visible effect is that no reconnect
 		// divider appears.
 	case client.RenewalFailed:
-		m.pushEvent(eventStyle.Render(
+		m.pushEvent(m.st.event.Render(
 			"token renewal failed ("+render.Line(msg.Err.Error())+
 				"); will reconnect when the current token expires"), 0)
 	case protocol.Unauthorized:
 		// Only reaches the UI after authentication, right before the
 		// server closes the socket (expiry or a rejected renewal).
-		m.pushEvent(eventStyle.Render(render.Line(msg.Message)), 0)
+		m.pushEvent(m.st.event.Render(render.Line(msg.Message)), 0)
 	case protocol.Error:
-		m.pushEvent(errorStyle.Render(render.Line(msg.Message)), 0)
+		m.pushEvent(m.st.err.Render(render.Line(msg.Message)), 0)
 	}
 }
 
@@ -352,16 +482,16 @@ func rosterEntry(u protocol.UserJoined) protocol.ChannelUser {
 }
 
 // awayText phrases an away frame as an event row.
-func awayText(a protocol.Away) string {
+func (m Model) awayText(a protocol.Away) string {
 	name := render.Line(a.Username)
 	if !a.IsAway {
-		return eventStyle.Render(name + " is back")
+		return m.st.event.Render(name + " is back")
 	}
 	text := name + " is away"
 	if a.AwayMessage != "" {
 		text += ": " + render.Text(a.AwayMessage)
 	}
-	return eventStyle.Render(text)
+	return m.st.event.Render(text)
 }
 
 // pushNotices replays the newest rows of the away-inbox, oldest first so
@@ -380,7 +510,7 @@ func (m *Model) pushNotices(notes []protocol.Notification) {
 		if n.MessageType == "directMessage" || n.MessageType == "modDirectMessage" {
 			label = "while you were away · [DM] " + who + ": "
 		}
-		m.pushEvent(eventStyle.Render(label+render.Text(n.Message)), n.ServerTime)
+		m.pushEvent(m.st.event.Render(label+render.Text(n.Message)), n.ServerTime)
 	}
 }
 
@@ -501,38 +631,38 @@ func (m *Model) refresh(follow bool) {
 func (m *Model) renderItem(it item) string {
 	prefix := ""
 	if m.showTimes {
-		prefix = timeStyle.Render(it.at.Local().Format("15:04")) + " "
+		prefix = m.st.time.Render(it.at.Local().Format("15:04")) + " "
 	}
 	switch it.kind {
 	case "gap":
-		return prefix + eventStyle.Render("— reconnected, older messages missing —")
+		return prefix + m.st.event.Render("— reconnected, older messages missing —")
 	case "event", "server":
 		if it.text != "" {
 			return prefix + it.text
 		}
-		return prefix + eventStyle.Render(render.Text(it.html))
+		return prefix + m.st.event.Render(render.Text(it.html))
 	case "me", "slap":
-		return prefix + eventStyle.Render("* "+render.Line(it.username)+" "+
+		return prefix + m.st.event.Render("* "+render.Line(it.username)+" "+
 			render.Text(it.html))
 	}
 
-	name := userStyle
+	name := m.st.user
 	if it.isMod {
-		name = modUserStyle
+		name = m.st.modUser
 	}
 	if it.username == m.self {
-		name = selfStyle
+		name = m.st.self
 	}
 	if it.mention {
-		name = mentionStyle
+		name = m.st.mention
 	}
 	speaker := name.Render("<" + render.Line(it.username) + ">")
 	if it.kind == "dm" {
-		speaker = dmStyle.Render("[DM] ") + speaker
+		speaker = m.st.dm.Render("[DM] ") + speaker
 	}
 	body := render.Text(it.html)
 	if it.spoiler && !m.revealSpoilers {
-		body = spoilerStyle.Render("▒▒▒ spoiler — ctrl+s to reveal ▒▒▒")
+		body = m.st.spoiler.Render("▒▒▒ spoiler — ctrl+s to reveal ▒▒▒")
 	}
 	return prefix + speaker + " " + body
 }
@@ -547,6 +677,9 @@ func (m Model) View() tea.View {
 
 // content draws the whole screen: status bar, transcript, input, help.
 func (m Model) content() string {
+	if m.splash != nil && m.splash.fits {
+		return m.splashView()
+	}
 	if !m.ready {
 		return "connecting…"
 	}
@@ -560,13 +693,30 @@ func (m Model) content() string {
 	// One line, always: a long stop reason would otherwise wrap the bar
 	// and push the layout off the bottom of the screen.
 	status = xansi.Truncate(status, max(0, m.vp.Width()-2), "…")
-	help := helpStyle.Render(
+	help := m.st.help.Render(
 		" enter send · /who · pgup/pgdn scroll · ctrl+s spoilers · " +
 			"ctrl+t times · ctrl+c quit")
-	return statusStyle.Width(m.vp.Width()).Render(status) + "\n" +
+	return m.st.status.Width(m.vp.Width()).Render(status) + "\n" +
 		m.vp.View() + "\n" +
 		m.input.View() + "\n" +
 		help
+}
+
+// splashView centers the current frame with the connection state and
+// the skip hint under it. The terminal keeps its own background (ADR
+// 0005): the wordmark is drawn over it, not on a painted base surface.
+func (m Model) splashView() string {
+	s := m.splash
+	caption := lipgloss.NewStyle().Width(s.art.W).Align(lipgloss.Center)
+	// One line, like the status bar: a long retry reason would wrap past
+	// the rows fitSplash reserved and push the hint off the screen. The
+	// transcript row keeps the full reason.
+	label := xansi.Truncate(m.stateLabel(), s.art.W, "…")
+	block := strings.Join(s.effect.Frame(s.art, s.palette, s.elapsed), "\n") +
+		"\n\n" + caption.Render(m.st.event.Render(label)) +
+		"\n" + caption.Render(m.st.help.Render("any key to skip"))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		block)
 }
 
 func plural(n int, one, many string) string {
@@ -580,7 +730,7 @@ func plural(n int, one, many string) string {
 // marked with @, away users dimmed with their away message.
 func (m Model) whoText() string {
 	if len(m.users) == 0 {
-		return eventStyle.Render("no user list yet")
+		return m.st.event.Render("no user list yet")
 	}
 	users := make([]protocol.ChannelUser, 0, len(m.users))
 	for _, u := range m.users {
@@ -602,7 +752,7 @@ func (m Model) whoText() string {
 			} else {
 				name += " (away)"
 			}
-			name = awayStyle.Render(name)
+			name = m.st.away.Render(name)
 		}
 		names = append(names, name)
 	}

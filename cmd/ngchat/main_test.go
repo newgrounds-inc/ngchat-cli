@@ -239,3 +239,29 @@ func TestLogoutOutcomes(t *testing.T) {
 		})
 	}
 }
+
+func TestPickTheme(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+		ok   bool
+	}{
+		{"", "ngchat", true},
+		{"ngchat", "ngchat", true},
+		{"classic", "classic", true},
+		{"neon", "", false},
+	}
+	for _, c := range cases {
+		th, err := pickTheme(c.name)
+		if (err == nil) != c.ok {
+			t.Errorf("pickTheme(%q) err=%v, want ok=%v", c.name, err, c.ok)
+			continue
+		}
+		if c.ok && th.Name != c.want {
+			t.Errorf("pickTheme(%q)=%q, want %q", c.name, th.Name, c.want)
+		}
+		if !c.ok && !strings.Contains(err.Error(), "classic, ngchat") {
+			t.Errorf("pickTheme(%q) error does not list the themes: %v", c.name, err)
+		}
+	}
+}

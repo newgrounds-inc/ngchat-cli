@@ -23,6 +23,8 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
 	"github.com/newgrounds-inc/ngchat-cli/internal/render"
+	"github.com/newgrounds-inc/ngchat-cli/internal/splash"
+	"github.com/newgrounds-inc/ngchat-cli/internal/theme"
 	"github.com/newgrounds-inc/ngchat-cli/internal/ui"
 )
 
@@ -43,6 +45,8 @@ func main() {
 	quiet := flag.Bool("quiet", false, "no terminal bell on mentions and DMs")
 	debug := flag.Bool("debug", false,
 		"write redacted frames and state changes to the debug log")
+	noSplash := flag.Bool("no-splash", false,
+		"skip the opening animation (NGCHAT_NO_SPLASH=1 does the same)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Usage = usage
 	flag.Parse()
@@ -91,12 +95,24 @@ func main() {
 	if err := site.CheckChatURL(wsURL); err != nil {
 		fatal(fmt.Errorf("NGCHAT_WS_URL: %w", err))
 	}
+	// Chat-only settings, like the URL above: resolved after the
+	// subcommand switch so a stale NGCHAT_THEME never blocks login or
+	// logout, and before prepareSite so a typo is answered at once
+	// rather than after a login prompt.
+	look, err := pickTheme(os.Getenv("NGCHAT_THEME"))
+	if err != nil {
+		fatal(err)
+	}
+	var opening splash.Effect = splash.DefaultLaser
+	if *noSplash || os.Getenv("NGCHAT_NO_SPLASH") != "" {
+		opening = nil
+	}
 	if err := prepareSite(ctx, store, site); err != nil {
 		exitLogin(ctx, err)
 	}
 	if err := runChat(ctx, chatOptions{
 		wsURL: wsURL, routing: routing, site: site,
-		quiet: *quiet, debug: *debug,
+		quiet: *quiet, debug: *debug, theme: look, splash: opening,
 	}); err != nil {
 		fatal(err)
 	}
@@ -187,6 +203,22 @@ type chatOptions struct {
 	site    *auth.Site
 	quiet   bool
 	debug   bool
+	theme   theme.Theme
+	splash  splash.Effect // nil plays no opening animation
+}
+
+// pickTheme resolves NGCHAT_THEME: empty is the default, anything else
+// must be a built-in name, listed in the error so the fix is on screen.
+func pickTheme(name string) (theme.Theme, error) {
+	if name == "" {
+		return theme.Default(), nil
+	}
+	t, ok := theme.Lookup(name)
+	if !ok {
+		return theme.Theme{}, fmt.Errorf("NGCHAT_THEME: unknown theme %q (themes: %s)",
+			name, strings.Join(theme.Names(), ", "))
+	}
+	return t, nil
 }
 
 // runChat runs the client and the TUI until one of them ends. It returns
@@ -223,7 +255,8 @@ func runChat(ctx context.Context, opts chatOptions) error {
 	go chat.Run(ctx)
 
 	prog := tea.NewProgram(
-		ui.New(chat, ui.Options{Channel: channel, Quiet: opts.quiet}),
+		ui.New(chat, ui.Options{Channel: channel, Quiet: opts.quiet,
+			Theme: opts.theme, Splash: opts.splash}),
 		tea.WithContext(ctx))
 	final, err := prog.Run()
 	if err != nil && ctx.Err() == nil {
@@ -469,12 +502,15 @@ environment:
   NGCHAT_SITE_URL         site base URL (default %s)
   NGCHAT_ROUTING_COOKIE   extra cookie for the dev/staging proxy
   NGCHAT_NG_COOKIE        NG cookie header (bypasses the stored login)
+  NGCHAT_THEME            color theme: %s (default %s)
+  NGCHAT_NO_SPLASH        set to skip the opening animation
 
 Both URLs must be wss/https unless the host is loopback, and the chat
 host must be on the site's domain. A login is stored per site, so
 switching NGCHAT_SITE_URL never sends one site's cookie to another; log
 in once per site.
-`, defaultWSURL, defaultSiteURL)
+`, defaultWSURL, defaultSiteURL, strings.Join(theme.Names(), ", "),
+		theme.Default().Name)
 }
 
 // fatal prints an error and exits non-zero.

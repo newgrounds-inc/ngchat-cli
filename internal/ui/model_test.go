@@ -16,6 +16,8 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
+	"github.com/newgrounds-inc/ngchat-cli/internal/splash"
+	"github.com/newgrounds-inc/ngchat-cli/internal/theme"
 )
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\`)
@@ -571,3 +573,149 @@ func TestNetworkTextCannotDriveTheTerminal(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func splashModel() Model {
+	return New(nil, Options{Channel: "general", Splash: splash.DefaultLaser})
+}
+
+// frameAt drives the splash clock to d after its start.
+func frameAt(m Model, d time.Duration) (Model, tea.Cmd) {
+	next, cmd := m.Update(frameMsg(m.splash.start.Add(d)))
+	return next.(Model), cmd
+}
+
+func sized(m Model, w, h int) Model {
+	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	return next.(Model)
+}
+
+func TestNoSplashByDefault(t *testing.T) {
+	if newModel().splash != nil {
+		t.Fatal("a nil Splash option still built a splash")
+	}
+}
+
+// TestSplashPlaysUntilOnline: the finished animation holds for the
+// client, then hands over to the chat screen and stops scheduling
+// frames.
+func TestSplashPlaysUntilOnline(t *testing.T) {
+	m := sized(splashModel(), 80, 24)
+	if m.splash == nil || !m.splash.fits {
+		t.Fatal("splash did not fit an 80×24 terminal")
+	}
+	v := m.View().Content
+	if n := strings.Count(v, "\n"); n != 24-1 {
+		t.Errorf("splash view has %d lines, want the terminal height", n+1)
+	}
+	for _, want := range []string{"any key to skip", "connecting…", "█"} {
+		if !strings.Contains(plain(v), want) {
+			t.Errorf("splash view lacks %q", want)
+		}
+	}
+	if strings.Contains(plain(v), "#general") {
+		t.Error("chat status bar shows during the splash")
+	}
+
+	m, cmd := frameAt(m, 100*time.Millisecond)
+	if m.splash == nil || cmd == nil {
+		t.Fatal("splash ended early or stopped scheduling frames")
+	}
+	m, _ = frameAt(m, splash.DefaultLaser.Duration())
+	if m.splash == nil {
+		t.Fatal("splash ended before the client was online")
+	}
+	m.handleEvent(client.Event{State: client.StateOnline})
+	m, cmd = frameAt(m, splash.DefaultLaser.Duration()+frameRate)
+	if m.splash != nil {
+		t.Fatal("splash still up with the animation done and the client online")
+	}
+	if cmd != nil {
+		t.Error("a frame was scheduled after the splash ended")
+	}
+	if !strings.Contains(plain(m.View().Content), "#general") {
+		t.Error("chat screen did not take over after the splash")
+	}
+}
+
+func TestSplashHoldsAtMostMaxSplash(t *testing.T) {
+	m := sized(splashModel(), 80, 24)
+	m, _ = frameAt(m, maxSplash-frameRate)
+	if m.splash == nil {
+		t.Fatal("splash gave up before maxSplash while still connecting")
+	}
+	m, _ = frameAt(m, maxSplash)
+	if m.splash != nil {
+		t.Fatal("splash held past maxSplash while still connecting")
+	}
+}
+
+// TestSplashSkipsOnKey: a key ends the splash and is spent doing so;
+// ctrl+c still quits outright.
+func TestSplashSkipsOnKey(t *testing.T) {
+	m := sized(splashModel(), 80, 24)
+	next, _ := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = next.(Model)
+	if m.splash != nil {
+		t.Fatal("a key did not skip the splash")
+	}
+	if m.input.Value() != "" {
+		t.Errorf("the skip key reached the input: %q", m.input.Value())
+	}
+
+	m = sized(splashModel(), 80, 24)
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("ctrl+c during the splash produced no command")
+	}
+	if _, quit := cmd().(tea.QuitMsg); !quit {
+		t.Error("ctrl+c during the splash did not quit")
+	}
+}
+
+// TestSplashSkippedWhenTooSmall: below the wordmark's scale-1 size the
+// chat screen shows at once rather than a clipped logo.
+func TestSplashSkippedWhenTooSmall(t *testing.T) {
+	m := sized(splashModel(), 30, 10)
+	if m.splash != nil {
+		t.Fatal("splash kept on a 30×10 terminal")
+	}
+	if !strings.Contains(plain(m.View().Content), "#general") {
+		t.Error("chat screen not shown after the splash was skipped")
+	}
+}
+
+// TestStylesFollowTheme: the status bar carries the theme's primary
+// color, which is the whole point of the theme seam. Classic's orange
+// is distinct from the default's, so a default leaking through fails.
+func TestStylesFollowTheme(t *testing.T) {
+	classic, _ := theme.Lookup("classic")
+	m := New(nil, Options{Channel: "general", Theme: classic})
+	m.layout(40, 8)
+	first := strings.SplitN(m.View().Content, "\n", 2)[0]
+	if !strings.Contains(first, "38;2;235;117;34") {
+		t.Errorf("status bar does not carry classic primary #eb7522: %q", first)
+	}
+	m.pushMessage(protocol.Message{Username: "bob", Message: "hi"}, false)
+	row := m.renderItem(m.items[0])
+	if !strings.Contains(row, "38;2;238;178;17") {
+		t.Errorf("username does not carry classic username #eeb211: %q", row)
+	}
+}
+
+// TestSplashCaptionStaysOneLine: a long retry reason under the wordmark
+// must truncate, never wrap the block taller than the terminal.
+func TestSplashCaptionStaysOneLine(t *testing.T) {
+	m := sized(splashModel(), 40, 8)
+	if m.splash == nil {
+		t.Fatal("splash did not fit a 40×8 terminal")
+	}
+	m.handleEvent(client.Event{State: client.StateReconnecting,
+		Err: errors.New(strings.Repeat("no such host ", 10))})
+	v := m.View().Content
+	if n := strings.Count(v, "\n"); n != 8-1 {
+		t.Errorf("splash view has %d lines, want exactly the terminal height", n+1)
+	}
+	if !strings.Contains(plain(v), "any key to skip") {
+		t.Error("the skip hint was pushed off the screen")
+	}
+}
