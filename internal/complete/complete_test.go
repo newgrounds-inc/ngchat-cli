@@ -121,6 +121,26 @@ func TestRankStableOnTies(t *testing.T) {
 	}
 }
 
+// TestRankTieBreaksOnExactKey confirms a tie on the lowercased key
+// (e.g. a roster carrying both "Bob" and "bob", which a map range can
+// hand back in either order) resolves on the exact key instead of
+// falling through to input order, so the result is the same regardless
+// of which one the caller happened to see first.
+func TestRankTieBreaksOnExactKey(t *testing.T) {
+	key := func(s string) string { return s }
+	want := []string{"Bob", "bob"} // "B" (0x42) sorts before "b" (0x62)
+
+	got := Rank("", []string{"bob", "Bob"}, key)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf(`Rank("", [bob, Bob]) = %v, want %v`, got, want)
+	}
+
+	got = Rank("", []string{"Bob", "bob"}, key)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf(`Rank("", [Bob, bob]) = %v, want %v`, got, want)
+	}
+}
+
 // capSource always matches at the start of the line and offers more
 // than MaxCandidates candidates, for the truncation test.
 type capSource struct{ n int }

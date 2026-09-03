@@ -178,8 +178,10 @@ type Model struct {
 	// completion is the open completion list, nil when closed.
 	completion *completionState
 	engine     complete.Engine
-	// sources is nil in production until phase 1 wires the roster in;
-	// tests inject a stub.
+	// sources is nil in production: completionSources builds the real
+	// list fresh on every call instead (see its doc comment for why).
+	// A test that sets this field non-nil overrides that and gets a
+	// fixed list back every time.
 	sources []complete.Source
 
 	items          []item
@@ -819,6 +821,46 @@ func runeOffset(s string, byteIdx int) int {
 	return len([]rune(s[:byteIdx]))
 }
 
+// completionSources returns the sources completion should query this
+// call. Model is a value type Bubble Tea copies on every Update, so a
+// slice built once in New and closed over that copy would read that
+// copy's self forever, and its users forever too: Subscribed replaces
+// m.users wholesale with a new map (see its handleEvent case), so the
+// captured copy's map would stay the empty one New made and never see
+// a roster at all. Building the slice fresh from the current receiver
+// on every call sidesteps both. Tests bypass all of this by setting
+// sources directly, which this returns unchanged when non-nil.
+func (m *Model) completionSources() []complete.Source {
+	if m.sources != nil {
+		return m.sources
+	}
+	return []complete.Source{complete.Mentions{Users: m.rosterUsers, Self: m.selfName}}
+}
+
+// rosterUsers adapts the roster to what complete.Mentions needs, read
+// fresh at query time so a join, a leave or an away change between
+// keystrokes needs no change notification into the completion package.
+// Usernames are sanitized here with render.Line; completionRow
+// sanitizes again when it draws the label, which is harmless since
+// render.Line is idempotent on already-clean text. A username that
+// sanitizes to "" (all control/bidi characters, or an empty one off
+// the wire) is dropped rather than offered as a blank row that would
+// splice "@ " on accept.
+func (m *Model) rosterUsers() []complete.User {
+	users := make([]complete.User, 0, len(m.users))
+	for _, u := range m.users {
+		if name := render.Line(u.Username); name != "" {
+			users = append(users, complete.User{Name: name, Away: u.IsAway})
+		}
+	}
+	return users
+}
+
+// selfName reports the signed-in username, or "" before Authenticated
+// arrives, sanitized with render.Line so it compares against the same
+// form rosterUsers produces for the roster's own copy of that name.
+func (m *Model) selfName() string { return render.Line(m.self) }
+
 // recompute re-evaluates completion from the current line and cursor.
 // It runs on every keystroke that reaches the input, but never while an
 // open list is being navigated: updateCompletion returns before this is
@@ -827,7 +869,7 @@ func runeOffset(s string, byteIdx int) int {
 func (m *Model) recompute() {
 	value := m.input.Value()
 	cursor := byteOffset(value, m.input.Position())
-	res, ok := m.engine.Complete(value, cursor, m.sources)
+	res, ok := m.engine.Complete(value, cursor, m.completionSources())
 	wasOpen := m.completion != nil
 	prevN := 0
 	if wasOpen {

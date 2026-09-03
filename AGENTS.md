@@ -192,7 +192,10 @@ rule instead (ADR 0006), since that one was never fuzzy upstream. The
 command table, the emote list and the emoji catalog are the same kind
 of hand-reconciled drift ADR 0002 already documents for the protocol,
 with `go generate` embedding the latter two from the upstream checkout
-(phases 3-4).
+(phases 3-4). `Mentions` (phase 1) is the first source: it ranks the
+live roster rather than a fixed list, reading `Users`/`Self` fresh on
+every `Candidates` call so a join, a leave or an away change between
+keystrokes needs no change notification into this package.
 
 **`internal/ui` — Bubble Tea.** `waitEvent` pumps one `client.Event` into
 the tea loop and reschedules itself, which is how the network goroutine and
@@ -216,7 +219,13 @@ at all (no-list mode): cycling instead previews the highlighted
 candidate directly in the line, trailing space trimmed, and accept
 adds it back. A resize reclamps the completion window (`clampWindow`)
 so a stale scroll position from before the resize cannot walk the
-list's row draw past the end of its candidates.
+list's row draw past the end of its candidates. `completionSources`
+builds the real source list fresh from the current `*Model` on every
+call rather than once in `New`, because `Model` is a value type Bubble
+Tea copies on every `Update`: a slice closed over the model as it stood
+in `New` would keep reading that copy's `self` *and* its `users` map
+forever — `Subscribed` replaces `users` wholesale with a new map, so
+the captured copy would stay stuck on the empty one `New` made.
 
 ## Conventions
 

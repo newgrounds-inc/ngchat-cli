@@ -10,38 +10,48 @@ import (
 // which ranks above a subsequence match (every rune of term appears in
 // key(item), in order, not necessarily adjacent). Items matching none
 // of the three are dropped. Within a tier, items sort alphabetically
-// (case-insensitive); items with equal keys keep their input order
-// (sort.SliceStable), which is what makes a source's own ordering (e.g.
-// upstream's static command table) survive a tie. An empty term
-// matches everything at the prefix tier, so the result is every item,
+// (case-insensitive); a tie on the lowercased key (e.g. a roster
+// carrying both "Bob" and "bob") breaks on the exact key instead of
+// falling back to input order, so the result stays the same regardless
+// of which order a caller's map range happened to visit them in. Items
+// tied on the exact key too keep their input order (sort.SliceStable),
+// which is what makes a source's own ordering (e.g. upstream's static
+// command table) survive a genuine tie. An empty term matches
+// everything at the prefix tier, so the result is every item,
 // alphabetical.
 //
 // This is the CLI's in-house departure from upstream's fuzzysort
 // (ADR 0006): deterministic, dependency-free, and close enough to what
 // a person expects when they don't know the exact name.
 func Rank[T any](term string, items []T, key func(T) string) []T {
-	// lower is carried alongside the item so the comparator below never
-	// re-lowercases a key it has already computed once per item.
+	// lower and exact are carried alongside the item so the comparator
+	// below never recomputes a key it has already read once per item.
 	type scored struct {
 		item  T
 		tier  int
 		lower string
+		exact string
 	}
 	lowerTerm := strings.ToLower(term)
 	scoredItems := make([]scored, 0, len(items))
 	for _, it := range items {
-		lowerKey := strings.ToLower(key(it))
+		exactKey := key(it)
+		lowerKey := strings.ToLower(exactKey)
 		tier, ok := matchTier(lowerKey, lowerTerm)
 		if !ok {
 			continue
 		}
-		scoredItems = append(scoredItems, scored{item: it, tier: tier, lower: lowerKey})
+		scoredItems = append(scoredItems,
+			scored{item: it, tier: tier, lower: lowerKey, exact: exactKey})
 	}
 	sort.SliceStable(scoredItems, func(i, j int) bool {
 		if scoredItems[i].tier != scoredItems[j].tier {
 			return scoredItems[i].tier < scoredItems[j].tier
 		}
-		return scoredItems[i].lower < scoredItems[j].lower
+		if scoredItems[i].lower != scoredItems[j].lower {
+			return scoredItems[i].lower < scoredItems[j].lower
+		}
+		return scoredItems[i].exact < scoredItems[j].exact
 	})
 	out := make([]T, len(scoredItems))
 	for i, s := range scoredItems {

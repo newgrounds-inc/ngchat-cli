@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1411,5 +1412,168 @@ func TestTabIsNoOpWithoutCompletion(t *testing.T) {
 	}
 	if m.completion != nil {
 		t.Error("tab with no sources matching should not open a completion")
+	}
+}
+
+// candidateLabels collects the labels of an open completion's
+// candidates, in display order, for comparing against a wanted roster.
+func candidateLabels(m Model) []string {
+	if m.completion == nil {
+		return nil
+	}
+	labels := make([]string, len(m.completion.res.Candidates))
+	for i, c := range m.completion.res.Candidates {
+		labels[i] = c.Label
+	}
+	return labels
+}
+
+// TestMentionCompletionFollowsRoster is the phase 1 wiring test: with
+// no sources override, completionSources builds complete.Mentions over
+// the live model, so @ opens straight from the roster and tracks joins,
+// leaves and away changes without any hook into the completion engine.
+func TestMentionCompletionFollowsRoster(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{Username: "me"}})
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 1, Username: "alice"}, {UserID: 2, Username: "bob"},
+		{UserID: 3, Username: "me"},
+	}}})
+
+	m = typeText(m, "@")
+	if got, want := candidateLabels(m), []string{"alice", "bob"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates after @ = %v, want %v (self excluded)", got, want)
+	}
+
+	m.handleEvent(joined(4, "carol", false))
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if m.completion != nil {
+		t.Fatal("backspacing the @ should close the completion")
+	}
+	m = typeText(m, "@")
+	if got, want := candidateLabels(m), []string{"alice", "bob", "carol"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates after carol joined = %v, want %v", got, want)
+	}
+
+	m.handleEvent(client.Event{Msg: protocol.UserLeft{UserID: 2, Username: "bob"}})
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = typeText(m, "@")
+	if got, want := candidateLabels(m), []string{"alice", "carol"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates after bob left = %v, want %v", got, want)
+	}
+
+	m.handleEvent(client.Event{Msg: protocol.Away{UserID: 1, Username: "alice",
+		IsAway: true, AwayMessage: "lunch"}})
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = typeText(m, "@")
+	idx := -1
+	for i, c := range m.completion.res.Candidates {
+		if c.Label == "alice" {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatal("alice missing from candidates after Away")
+	}
+	cand := m.completion.res.Candidates[idx]
+	if !cand.Dim {
+		t.Error("an away user's candidate must be Dim")
+	}
+	if !strings.Contains(plain(m.View().Content), "away") {
+		t.Error(`view does not show "away" for the away candidate`)
+	}
+}
+
+// TestMentionCompletionSelfNeverStale guards the closure-freshness
+// requirement in AGENTS.md's internal/ui paragraph, in two halves.
+// completionSources must build complete.Mentions bound to the current
+// *Model on every call, not close over the model as it stood in New:
+// a closure captured that early would trip the first assertion before
+// the test ever reaches the second, since Subscribed replaces m.users
+// wholesale and the captured copy's map would still be the empty one
+// New made (an empty roster, not "alice, me"). The second assertion is
+// what isolates the self half: even a fix that rebuilds the source
+// fresh but still reads a self captured at New's time would keep
+// showing "me" as a candidate after Authenticated arrives.
+func TestMentionCompletionSelfNeverStale(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 1, Username: "alice"}, {UserID: 2, Username: "me"},
+	}}})
+
+	// self is still "" here, so the roster's own "me" row is a normal
+	// candidate — this is what a stale closure over an empty self would
+	// keep showing forever.
+	m = typeText(m, "@")
+	if got, want := candidateLabels(m), []string{"alice", "me"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates before auth = %v, want %v", got, want)
+	}
+
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{Username: "me"}})
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = typeText(m, "@")
+	if got, want := candidateLabels(m), []string{"alice"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates after auth = %v, want %v (me now excluded)", got, want)
+	}
+}
+
+// TestMentionCompletionAccepts checks the end-to-end splice: accepting
+// a roster-backed mention candidate inserts "@name " with the cursor at
+// the end, same as the stubbed phase 0 tests already check for a
+// synthetic source.
+func TestMentionCompletionAccepts(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.conn = &fakeConn{}
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 1, Username: "alice"},
+	}}})
+
+	m = typeText(m, "hi @al")
+	m = keyEnterC(m)
+	if got, want := m.input.Value(), "hi @alice "; got != want {
+		t.Fatalf("input after accept = %q, want %q", got, want)
+	}
+	if pos := m.input.Position(); pos != len([]rune(m.input.Value())) {
+		t.Errorf("cursor after accept = %d, want end of line (%d)",
+			pos, len([]rune(m.input.Value())))
+	}
+}
+
+// TestMentionCompletionDropsBlankNames: a username that sanitizes to ""
+// (all control/bidi characters, or an empty one off the wire) must not
+// reach the candidate list, since accepting it would splice a bare
+// "@ " into the line.
+func TestMentionCompletionDropsBlankNames(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{Username: "me"}})
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 1, Username: "\u200e"}, {UserID: 2, Username: ""},
+		{UserID: 3, Username: "ok"},
+	}}})
+
+	m = typeText(m, "@")
+	if got, want := candidateLabels(m), []string{"ok"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates with blank-name rows = %v, want %v", got, want)
+	}
+}
+
+// TestMentionCompletionSelfComparedSanitized: self and the roster are
+// compared in the same sanitized form, so a stripped rune in the
+// signed-in name cannot leak self into the list.
+func TestMentionCompletionSelfComparedSanitized(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{Username: "m\u200ee"}})
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 1, Username: "alice"}, {UserID: 2, Username: "m\u200ee"},
+	}}})
+
+	m = typeText(m, "@")
+	if got, want := candidateLabels(m), []string{"alice"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates = %v, want %v (self must be excluded)", got, want)
 	}
 }
