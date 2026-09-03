@@ -52,6 +52,12 @@ func (Emotes) Match(line string, cursor int) (start int, term string, ok bool) {
 func (Emotes) Candidates(term string) []Candidate {
 	term = strings.ReplaceAll(term, "*", "")
 	ranked := Rank(term, emoteCodes, identity)
+	// Truncate before building rows, not after: see Emoji.Candidates
+	// for why building a Candidate per match first would waste work
+	// Engine.Complete's own MaxCandidates cap throws away anyway.
+	if len(ranked) > MaxCandidates {
+		ranked = ranked[:MaxCandidates]
+	}
 	out := make([]Candidate, len(ranked))
 	for i, code := range ranked {
 		out[i] = Candidate{Insert: code + " ", Label: code}

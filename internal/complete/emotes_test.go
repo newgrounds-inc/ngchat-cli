@@ -63,10 +63,12 @@ func TestEmotesMatchNgleTriggersRegardlessOfCandidates(t *testing.T) {
 	}
 }
 
-// TestEmotesCandidatesRanksPrefixFirst: "ngaho" matches over a dozen
-// shortcodes; the prefix tier puts "ngaHoldup" first (alphabetically
-// first among the "ngaho*" prefix matches, case-insensitively), and a
-// shortcode with no match at any tier ("tfPls") is absent.
+// TestEmotesCandidatesRanksPrefixFirst: the prefix tier puts
+// "ngaHoldup" first for "ngaho" (alphabetically first among the
+// "ngaho*" prefix matches, case-insensitively). Candidates truncates
+// to MaxCandidates, so the no-match check ("tfPls" must be dropped)
+// runs against the full Rank output, where a subsequence false
+// positive could not hide past the cap.
 func TestEmotesCandidatesRanksPrefixFirst(t *testing.T) {
 	e := Emotes{}
 	got := e.Candidates("ngaho")
@@ -79,9 +81,9 @@ func TestEmotesCandidatesRanksPrefixFirst(t *testing.T) {
 	if got[0].Insert != "ngaHoldup " {
 		t.Errorf("Candidates(\"ngaho\")[0].Insert = %q, want \"ngaHoldup \"", got[0].Insert)
 	}
-	for _, c := range got {
-		if c.Label == "tfPls" {
-			t.Error("Candidates(\"ngaho\") includes \"tfPls\", want it dropped")
+	for _, code := range Rank("ngaho", emoteCodes, identity) {
+		if code == "tfPls" {
+			t.Error("Rank(\"ngaho\") includes \"tfPls\", want it dropped")
 		}
 	}
 }

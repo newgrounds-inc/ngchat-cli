@@ -1794,3 +1794,65 @@ func TestEmoteSourceNeverShadowsMention(t *testing.T) {
 		t.Errorf("completion source = %q, want \"mention\" (never emote)", got)
 	}
 }
+
+// TestEmojiCompletionOpensFromEmbeddedList checks the row survives the
+// full render path: render.Line runs over every candidate label
+// (model.go's completionRow), and it must leave both the ":smile:"
+// text and the glyph's ZWJ/variation-selector runes intact for the
+// glyph column to still line up. The plain (ANSI-stripped) view is
+// where ":smile:" is checked; the raw, unstripped view is where the
+// glyph itself is checked, since stripping ANSI never touches the
+// glyph's bytes but a regression in render.Line's sanitizing could.
+func TestEmojiCompletionOpensFromEmbeddedList(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.conn = &fakeConn{}
+
+	m = typeText(m, ":smi")
+	if m.completion == nil || len(m.completion.res.Candidates) == 0 {
+		t.Fatalf("completion after \":smi\" = %+v, want an open list", m.completion)
+	}
+	if got := m.completion.res.Source; got != "emoji" {
+		t.Fatalf("completion source = %q, want \"emoji\"", got)
+	}
+
+	raw := m.View().Content
+	view := plain(raw)
+	if !strings.Contains(view, ":smile:") {
+		t.Fatalf("plain view = %q, want it to contain \":smile:\"", view)
+	}
+	if !strings.Contains(raw, "\U0001f604") {
+		t.Fatalf("raw view missing the smile glyph")
+	}
+
+	m = keyEnterC(m)
+	if m.completion != nil {
+		t.Error("enter should close the completion")
+	}
+	if got, want := m.input.Value(), ":smile: "; got != want {
+		t.Errorf("value after accept = %q, want %q", got, want)
+	}
+}
+
+// TestEmojiCompletionTextEmoticonsNeverOpen checks the trigger's
+// two-character minimum and \B boundary from the UI's own key path,
+// not just Emoji.Match directly: typing a text emoticon or a URL
+// scheme must never open a list a person would then have to esc past.
+func TestEmojiCompletionTextEmoticonsNeverOpen(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.conn = &fakeConn{}
+
+	m = typeText(m, ":)")
+	if m.completion != nil {
+		t.Fatalf("completion after \":)\" = %+v, want none open", m.completion)
+	}
+
+	for range ":)" {
+		m = press(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	}
+	m = typeText(m, "http://")
+	if m.completion != nil {
+		t.Fatalf("completion after \"http://\" = %+v, want none open", m.completion)
+	}
+}

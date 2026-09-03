@@ -97,12 +97,14 @@ changes upstream require a manual sync here (ADR 0002). The
 slash-command table in `internal/complete/commands.go` is reconciled
 by hand against upstream `slash_commands.ts` the same way, and its
 comment names the upstream commit. The emote shortcode list in
-`internal/complete/emotes_gen.go` extends the same drift contract, but
+`internal/complete/emotes_gen.go` and the emoji catalog in
+`internal/complete/emoji_gen.go` extend the same drift contract, but
 generated rather than hand-typed: `go generate ./internal/complete`
 (`NGCHAT_UPSTREAM`, no default — see Commands) reads upstream's
-`emoticons.json`/`emoticons-small.json` and writes the header naming
-the upstream commit; regenerate it whenever upstream's emoticon lists
-change.
+`emoticons.json`/`emoticons-small.json` and
+`emoji_catalog.generated.ts` and writes both files' headers naming the
+upstream commit; regenerate whenever upstream's emoticon lists or
+emoji catalog change.
 
 **`internal/client` — the session state machine.** `Run` loops sessions
 with exponential backoff; `session` does mint → dial → `authenticate` →
@@ -221,7 +223,23 @@ has no lookbehind, so a leading `(?:^|\s)` stands in for upstream's
 emote. A `*` typed in the term is stripped before ranking rather than
 given wildcard semantics of its own: the shared `Rank`'s subsequence
 tier already treats the gap as "anything", which is the same
-approximation upstream's fuzzysort gives it.
+approximation upstream's fuzzysort gives it. `Emoji` (phase 4) is the
+same shape as `Emotes`, over `emojiCatalog` (`[]emoji{Name, Glyph}`)
+instead of `emoteCodes`; its trigger is `\B:([+0-9a-z][-+_*0-9a-z]+)$`,
+upstream's own regex, where `\B` is what keeps `http://` closed and the
+two-character minimum is what keeps `:)`/`:D`/`:-)` typeable. Each
+candidate's row pairs `glyphCell` — the glyph padded to a fixed 3-cell
+column with `ansi.StringWidth`, which already accounts for ZWJ
+sequences and variation selectors — with the shortname, so the
+shortname starts at the same column for emoji-presentation glyphs
+(a wide family/couple glyph and a narrow one alike). `ansi.StringWidth`
+under-reports a skin-tone modifier sequence (`:woman_lifting_weights_tone1:`,
+U+1F3FB..U+1F3FF) as 1 cell where UTS #51 mandates emoji presentation
+(2 cells); `glyphCell` corrects for that one known case. A handful of
+unrelated glyphs (`:detective:` among them) still render narrower than
+the column expects in some terminals for reasons outside this
+function's control; eyeball `:woman_lifting_weights_tone1:` and
+`:detective:` specifically when checking alignment on a new terminal.
 
 **`internal/ui` — Bubble Tea.** `waitEvent` pumps one `client.Event` into
 the tea loop and reschedules itself, which is how the network goroutine and

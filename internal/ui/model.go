@@ -845,6 +845,7 @@ func (m *Model) completionSources() []complete.Source {
 	}
 	return []complete.Source{
 		complete.Emotes{},
+		complete.Emoji{},
 		complete.Mentions{Users: m.rosterUsers, Self: m.selfName},
 		complete.Commands{Viewer: m.viewerAccess},
 	}

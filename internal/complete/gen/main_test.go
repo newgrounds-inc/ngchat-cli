@@ -10,9 +10,12 @@ import (
 	"testing"
 )
 
-// writeJSON writes a JSON array literal to a temp file and returns its
-// path, so readEmotes tests never touch a real upstream checkout.
-func writeJSON(t *testing.T, dir, name, contents string) string {
+// writeFile writes contents to a temp file and returns its path, so
+// readEmotes and readEmoji tests never touch a real upstream checkout.
+// contents is a JSON array literal for the readEmotes tests and a
+// slice of a .ts source file for the readEmoji ones; this helper is
+// agnostic to which.
+func writeFile(t *testing.T, dir, name, contents string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
 	if err := os.WriteFile(p, []byte(contents), 0o644); err != nil {
@@ -27,8 +30,8 @@ func writeJSON(t *testing.T, dir, name, contents string) string {
 // ties broken by the exact string.
 func TestReadEmotesDedupesUnionsAndSorts(t *testing.T) {
 	dir := t.TempDir()
-	a := writeJSON(t, dir, "a.json", `["ngbSmile", "ngaAyy", "ngaAyy", "Zebra"]`)
-	b := writeJSON(t, dir, "b.json", `["ngaAyy", "apple"]`)
+	a := writeFile(t, dir, "a.json", `["ngbSmile", "ngaAyy", "ngaAyy", "Zebra"]`)
+	b := writeFile(t, dir, "b.json", `["ngaAyy", "apple"]`)
 
 	got, err := readEmotes(a, b)
 	if err != nil {
@@ -45,7 +48,7 @@ func TestReadEmotesDedupesUnionsAndSorts(t *testing.T) {
 // does not today, but the generator must not assume that forever).
 func TestReadEmotesNgrandomAppendedOnce(t *testing.T) {
 	dir := t.TempDir()
-	a := writeJSON(t, dir, "a.json", `["ngrandom", "ngaAyy"]`)
+	a := writeFile(t, dir, "a.json", `["ngrandom", "ngaAyy"]`)
 
 	got, err := readEmotes(a)
 	if err != nil {
@@ -66,7 +69,7 @@ func TestReadEmotesNgrandomAppendedOnce(t *testing.T) {
 // case-folding sort by their exact (case-sensitive) form instead.
 func TestReadEmotesSortTieBrokenByExactString(t *testing.T) {
 	dir := t.TempDir()
-	a := writeJSON(t, dir, "a.json", `["ngaFoo", "ngafoo"]`)
+	a := writeFile(t, dir, "a.json", `["ngaFoo", "ngafoo"]`)
 
 	got, err := readEmotes(a)
 	if err != nil {
@@ -87,7 +90,7 @@ func TestReadEmotesSortTieBrokenByExactString(t *testing.T) {
 // shortcode.
 func TestReadEmotesTrimsWhitespaceAndDropsEmpty(t *testing.T) {
 	dir := t.TempDir()
-	a := writeJSON(t, dir, "a.json", `[" ngaAyy ", "ngaAyy", "  ", ""]`)
+	a := writeFile(t, dir, "a.json", `[" ngaAyy ", "ngaAyy", "  ", ""]`)
 
 	got, err := readEmotes(a)
 	if err != nil {
@@ -264,7 +267,7 @@ func TestReadEmotesMissingFile(t *testing.T) {
 // TestReadEmotesInvalidJSON reports a wrapped error on malformed input.
 func TestReadEmotesInvalidJSON(t *testing.T) {
 	dir := t.TempDir()
-	a := writeJSON(t, dir, "a.json", `not json`)
+	a := writeFile(t, dir, "a.json", `not json`)
 	if _, err := readEmotes(a); err == nil {
 		t.Fatal("readEmotes with invalid JSON: want an error, got nil")
 	}
@@ -353,4 +356,170 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// emojiFixture is a hand-built stand-in for upstream's
+// emoji_catalog.generated.ts: three array rows (a plain one, a
+// multi-codepoint ZWJ sequence, and a "+"-prefixed name) preceded by a
+// doc comment shaped like upstream's own, which shows a worked example
+// of the same `[':name:', 'codepoints']` shape inline rather than as
+// its own indented array row. That example names a shortname
+// ("interrobang") absent from the array itself, so a regression that
+// drops emojiLinePattern's line-start indentation anchor would show up
+// here as a spurious fourth entry rather than silently passing.
+const emojiFixture = `/** doc comment example: [':interrobang:', '2049-fe0f'] inline. */
+export const EMOJI_CATALOG = [
+  [':100:', '1f4af'],
+  [':family_man_boy:', '1f468-200d-1f466'],
+  [':+1:', '1f44d'],
+];
+`
+
+// TestReadEmojiDecodesSortsAndIgnoresProse checks the three shaping
+// rules at once: each entry's codepoints decode into the glyph they
+// spell (single codepoint, multi-codepoint ZWJ sequence, and a
+// "+"-prefixed name all included), the result is sorted by shortname
+// in plain string order, and the doc comment's own worked example
+// (naming a shortname not in the array) contributes no entry.
+func TestReadEmojiDecodesSortsAndIgnoresProse(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "emoji.ts", emojiFixture)
+
+	got, err := readEmoji(path)
+	if err != nil {
+		t.Fatalf("readEmoji: %v", err)
+	}
+	want := []emojiEntry{
+		{Name: "+1", Glyph: "\U0001f44d"},
+		{Name: "100", Glyph: "\U0001f4af"},
+		{Name: "family_man_boy", Glyph: "\U0001f468\u200d\U0001f466"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("readEmoji = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("readEmoji[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestReadEmojiMalformedHexIsError checks that a codepoint part that
+// fails strconv.ParseUint fails the whole read rather than silently
+// dropping the entry: upstream's own generator guarantees well-formed
+// hex, so a bad part here means this tool's assumptions have drifted.
+func TestReadEmojiMalformedHexIsError(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "emoji.ts", `export const EMOJI_CATALOG = [
+  [':bad:', '1f4af-zzzz'],
+];
+`)
+	if _, err := readEmoji(path); err == nil {
+		t.Fatal("readEmoji with a malformed hex part: want an error, got nil")
+	}
+}
+
+// TestDecodeGlyphRejectsOutOfRangeCodepoints covers the three ways a
+// codepoint part can be lexically valid hex (so strconv.ParseUint
+// alone accepts it) while still not naming a Unicode scalar value:
+// above unicode.MaxRune, exactly one past it, and a lone UTF-16
+// surrogate. Each would otherwise decode via rune()/WriteRune into
+// U+FFFD (the replacement character) rather than fail, silently
+// swapping the intended glyph for a mangled one.
+func TestDecodeGlyphRejectsOutOfRangeCodepoints(t *testing.T) {
+	tests := []struct {
+		name string
+		hex  string
+	}{
+		{"far above unicode.MaxRune", "1f4afff"},
+		{"one past unicode.MaxRune", "110000"},
+		{"lone UTF-16 surrogate", "d83d"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := decodeGlyph(tc.hex); err == nil {
+				t.Fatalf("decodeGlyph(%q): want an error, got nil", tc.hex)
+			}
+		})
+	}
+}
+
+// TestReadEmojiMissingFile reports a wrapped error rather than
+// panicking or returning a partial catalog.
+func TestReadEmojiMissingFile(t *testing.T) {
+	_, err := readEmoji(filepath.Join(t.TempDir(), "nope.ts"))
+	if err == nil {
+		t.Fatal("readEmoji with a missing file: want an error, got nil")
+	}
+}
+
+// TestReadEmojiErrorsOnWrappedRow guards against a partial reformat
+// upstream could make (a subset of rows wrapped across lines, past
+// some line-length limit) that emojiLinePattern's single-line match
+// silently drops while still leaving readEmoji's row count well above
+// minEmojiEntries: the middle row here is wrapped across three lines,
+// the open bracket alone on its own line the way a formatter wraps a
+// long call, and readEmoji must refuse to treat that as "one fewer
+// entry" and instead report the row-start/parsed mismatch.
+func TestReadEmojiErrorsOnWrappedRow(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "emoji.ts", `export const EMOJI_CATALOG = [
+  [':100:', '1f4af'],
+  [
+    ':wrapped:',
+    '1f9d1',
+  ],
+  [':zzz:', '1f4a4'],
+];
+`)
+	_, err := readEmoji(path)
+	if err == nil {
+		t.Fatal("readEmoji with a wrapped row: want an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "upstream format changed") {
+		t.Errorf("readEmoji error = %q, want it to name the format change", err)
+	}
+}
+
+// TestRequireMinEmojiEntries checks the plausibility floor both ways,
+// the same shape as TestRequireMinCodes.
+func TestRequireMinEmojiEntries(t *testing.T) {
+	if err := requireMinEmojiEntries("/some/checkout", make([]emojiEntry, minEmojiEntries-1)); err == nil {
+		t.Fatal("requireMinEmojiEntries below the floor: want an error, got nil")
+	} else if !strings.Contains(err.Error(), "/some/checkout") {
+		t.Errorf("requireMinEmojiEntries error = %q, want it to name the checkout dir", err)
+	}
+	if err := requireMinEmojiEntries("/some/checkout", make([]emojiEntry, minEmojiEntries)); err != nil {
+		t.Errorf("requireMinEmojiEntries at the floor: want nil, got %v", err)
+	}
+}
+
+// TestEmojiSourceIsFormattedAndCarriesCommit mirrors
+// TestEmoteSourceIsFormattedAndCarriesCommit: the header names the
+// commit, the package clause and slice are present, the glyph is
+// emitted as an ASCII escape rather than the raw rune, and the output
+// is already gofmt-clean.
+func TestEmojiSourceIsFormattedAndCarriesCommit(t *testing.T) {
+	src, err := emojiSource("abc1234", []emojiEntry{
+		{Name: "100", Glyph: "\U0001f4af"},
+	})
+	if err != nil {
+		t.Fatalf("emojiSource: %v", err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		"abc1234",
+		"DO NOT EDIT",
+		"package complete",
+		`"100"`,
+		`"\U0001f4af"`,
+		"var emojiCatalog = []emoji{",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("emojiSource output missing %q:\n%s", want, text)
+		}
+	}
+	if strings.ContainsRune(text, '\U0001f4af') {
+		t.Errorf("emojiSource output contains a raw glyph byte, want only the ASCII escape:\n%s", text)
+	}
 }

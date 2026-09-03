@@ -12,8 +12,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 // upstreamEnvVar names the checkout ngen reads from. Kept as a constant
@@ -26,6 +29,15 @@ const upstreamEnvVar = "NGCHAT_UPSTREAM"
 // where "go run ./gen" itself was invoked from.
 const outFile = "emotes_gen.go"
 
+// emojiOutFile is emoji_gen.go's path, alongside outFile for the same
+// reason.
+const emojiOutFile = "emoji_gen.go"
+
+// emojiCatalogPath is the upstream file's path, relative to the
+// checkout root, that holds the generated emoji catalog this tool
+// reads from.
+const emojiCatalogPath = "src/client/app/chat/autocomplete/strategies/emoji_catalog.generated.ts"
+
 // minEmoteCodes is a plausibility floor on readEmotes's result: well
 // under upstream's actual count (1181 as of the commit this was
 // written against), so a legitimate future trim of the lists would
@@ -35,6 +47,13 @@ const outFile = "emotes_gen.go"
 // emote list.
 const minEmoteCodes = 1000
 
+// minEmojiEntries is readEmoji's own plausibility floor, well under
+// upstream's actual count (3991 as of the commit this was written
+// against) for the same reason minEmoteCodes exists: a wrong
+// NGCHAT_UPSTREAM or a moved catalog path fails loudly here instead of
+// silently shrinking the composer's emoji list.
+const minEmojiEntries = 3000
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -42,10 +61,22 @@ func main() {
 	}
 }
 
-// run wires the environment, the two upstream JSON paths and the
-// commit lookup together, then writes the generated file. All the
-// actual shaping happens in readEmotes and emoteSource, which take
-// plain inputs so main_test.go can exercise them without a checkout.
+// run wires the environment, the two upstream sources and the commit
+// lookup together, then writes both generated files. All the actual
+// shaping happens in readEmotes/emoteSource and readEmoji/emojiSource,
+// which take plain inputs so main_test.go can exercise them without a
+// checkout.
+//
+// Both sources are read, validated and rendered to bytes in memory
+// before either os.WriteFile call: writing emotes_gen.go as soon as
+// it was ready (as an earlier version of this function did) meant an
+// emoji-side failure after that point left the two committed files
+// naming the same upstream commit in their headers while actually
+// reflecting two different upstream trees — the previous run's emoji
+// catalog next to a freshly regenerated emote list. Front-loading both
+// reads means the only remaining way to get a partial regeneration is
+// a write failure between the two os.WriteFile calls (a full disk,
+// say), which is outside this tool's control either way.
 func run() error {
 	if err := ensureRunFromPackageDir("."); err != nil {
 		return err
@@ -64,15 +95,32 @@ func run() error {
 	if err := requireMinCodes(dir, codes); err != nil {
 		return err
 	}
+	entries, err := readEmoji(filepath.Join(dir, emojiCatalogPath))
+	if err != nil {
+		return err
+	}
+	if err := requireMinEmojiEntries(dir, entries); err != nil {
+		return err
+	}
+
 	commit, err := upstreamCommit(dir, gitOutput)
 	if err != nil {
 		return err
 	}
-	src, err := emoteSource(commit, codes)
+
+	emoteSrc, err := emoteSource(commit, codes)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(outFile, src, 0o644)
+	emojiSrc, err := emojiSource(commit, entries)
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(outFile, emoteSrc, 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(emojiOutFile, emojiSrc, 0o644)
 }
 
 // requireMinCodes errors when codes is implausibly short for a real
@@ -84,6 +132,18 @@ func requireMinCodes(dir string, codes []string) error {
 		return fmt.Errorf(
 			"only %d shortcodes in %s; upstream layout probably moved",
 			len(codes), dir)
+	}
+	return nil
+}
+
+// requireMinEmojiEntries is readEmoji's counterpart to requireMinCodes,
+// against its own floor: the two catalogs have unrelated sizes, so one
+// plausibility check must not stand in for the other.
+func requireMinEmojiEntries(dir string, entries []emojiEntry) error {
+	if len(entries) < minEmojiEntries {
+		return fmt.Errorf(
+			"only %d emoji entries in %s; upstream layout probably moved",
+			len(entries), dir)
 	}
 	return nil
 }
@@ -256,6 +316,138 @@ func emoteSource(commit string, codes []string) ([]byte, error) {
 	b.WriteString("var emoteCodes = []string{\n")
 	for _, code := range codes {
 		fmt.Fprintf(&b, "\t%q,\n", code)
+	}
+	b.WriteString("}\n")
+	return format.Source([]byte(b.String()))
+}
+
+// emojiEntry is one upstream catalog row after its glyph has been
+// decoded from hex codepoints, ready to render into emoji_gen.go.
+type emojiEntry struct {
+	Name  string
+	Glyph string
+}
+
+// emojiLinePattern matches one `[':shortname:', 'codepoints']` array
+// row in upstream's emoji_catalog.generated.ts, anchored to the exact
+// two-space indentation every real row carries (`(?m)^  \[`). The
+// anchor is load-bearing, not decorative: the file's own leading
+// doc comment contains one line of prose showing that same
+// `[':interrobang:', '2049-fe0f']` shape as a worked example, and
+// without the indentation anchor this pattern would parse that prose
+// as a second, duplicate ":interrobang:" entry. Group 1 is the
+// shortname without its delimiting colons; group 2 is the raw
+// "-"-joined codepoints string, validated as hex by decodeGlyph rather
+// than by this pattern, so a malformed part (upstream's own generator
+// slipping, or this tool's assumptions drifting from its format)
+// surfaces as readEmoji's error instead of a silent non-match.
+var emojiLinePattern = regexp.MustCompile(`(?m)^  \[':([^':]+):', '([^']+)'\],$`)
+
+// emojiRowStartPattern is a deliberately loose superset of
+// emojiLinePattern: any line beginning (after leading whitespace) with
+// "[" then a quote, whether or not the rest of that row's shape (the
+// closing quote, comma and bracket) lands on the same line. Go's \s
+// class includes "\n", so this also matches a row upstream's own
+// prettier has wrapped across several lines (an open bracket alone on
+// one line, the shortname and codepoints indented below it) — those
+// wrapped rows are exactly what emojiLinePattern, being single-line,
+// cannot see. readEmoji compares the two counts so a reformat that
+// silently drops rows (rather than merely emptying the file, which
+// requireMinEmojiEntries already catches) fails loudly instead of
+// quietly shrinking the catalog by however many rows got wrapped.
+var emojiRowStartPattern = regexp.MustCompile(`(?m)^\s*\[\s*'`)
+
+// readEmoji parses path (upstream's emoji_catalog.generated.ts) for
+// every `[':shortname:', 'codepoints']` row, decodes each entry's
+// codepoints into its glyph at generate time so the row renderer never
+// parses hex, and sorts the result by shortname. A codepoint that
+// fails to parse is an error, not a skip: upstream's own generator
+// guarantees well-formed hex, so a failure here means this tool's
+// pattern or decoding has drifted from upstream's format, not that one
+// bad row should quietly vanish from the catalog. The same is true of
+// a row-shaped line emojiLinePattern fails to fully match: see
+// emojiRowStartPattern's doc comment for why that signals a format
+// change rather than a row this tool never had to understand.
+func readEmoji(path string) ([]emojiEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	text := string(data)
+	matches := emojiLinePattern.FindAllStringSubmatch(text, -1)
+	rowStarts := len(emojiRowStartPattern.FindAllStringIndex(text, -1))
+	if rowStarts > len(matches) {
+		return nil, fmt.Errorf(
+			"parsed %d of %d catalog rows in %s; upstream format changed",
+			len(matches), rowStarts, path)
+	}
+	entries := make([]emojiEntry, 0, len(matches))
+	for _, m := range matches {
+		name, hex := m[1], m[2]
+		glyph, err := decodeGlyph(hex)
+		if err != nil {
+			return nil, fmt.Errorf("emoji %q: %w", name, err)
+		}
+		entries = append(entries, emojiEntry{Name: name, Glyph: glyph})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return entries, nil
+}
+
+// decodeGlyph joins hex's "-"-separated codepoints (each a lowercase
+// hex string, e.g. "1f468-200d-2764-fe0f-200d-1f468") into the glyph
+// they spell, in order, so a multi-codepoint sequence (a variation
+// selector, a ZWJ family or couple) round-trips as the same rune
+// sequence a browser would render from the same codepoints.
+//
+// strconv.ParseUint alone only rejects lexically malformed input: a
+// value above unicode.MaxRune ("1f4afff") or a lone UTF-16 surrogate
+// ("d83d", never a valid standalone Unicode scalar value) both parse
+// cleanly as a uint32 and would otherwise decode to U+FFFD (the
+// replacement character) with WriteRune, silently swapping the
+// intended glyph for a mangled one instead of failing loudly the way
+// every other malformed-input case here does.
+func decodeGlyph(hex string) (string, error) {
+	var b strings.Builder
+	for _, part := range strings.Split(hex, "-") {
+		v, err := strconv.ParseUint(part, 16, 32)
+		if err != nil {
+			return "", fmt.Errorf("parse codepoint %q: %w", part, err)
+		}
+		if v > unicode.MaxRune || (v >= 0xd800 && v <= 0xdfff) {
+			return "", fmt.Errorf("codepoint %q is not a valid Unicode scalar value", part)
+		}
+		b.WriteRune(rune(v))
+	}
+	return b.String(), nil
+}
+
+// emojiSource renders emoji_gen.go's full contents, the same shape
+// emoteSource produces for emotes_gen.go: a single-line generated-code
+// header naming the upstream commit, the package clause, and the
+// emojiCatalog slice, formatted with go/format so the committed file
+// is gofmt-clean. Glyph is emitted via strconv.QuoteToASCII rather
+// than a raw string literal, so the glyph column stays plain ASCII: a
+// raw ZWJ sequence or variation selector sitting in the source would
+// be invisible or misleading in a diff or an editor that renders it as
+// a combined glyph instead of the individual runes it actually is.
+// Name is emitted with %q instead, which is not similarly restricted
+// to ASCII: it can carry a raw non-ASCII rune (upstream's one
+// non-ASCII shortname, "piñata") since a plain accented letter is
+// neither bidi- nor ZWJ-hazardous the way a glyph's own codepoints
+// can be.
+func emojiSource(commit string, entries []emojiEntry) ([]byte, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b,
+		"// Code generated by internal/complete/gen from newgrounds-inc/ngchat %s; DO NOT EDIT.\n\n",
+		commit)
+	b.WriteString("package complete\n\n")
+	b.WriteString("// emojiCatalog is every emoji shortname the composer can complete,\n")
+	b.WriteString("// with its glyph decoded from upstream's codepoints at generate time\n")
+	b.WriteString("// so the row renderer never parses hex.\n")
+	b.WriteString("var emojiCatalog = []emoji{\n")
+	for _, e := range entries {
+		fmt.Fprintf(&b, "\t{%q, %s},\n", e.Name, strconv.QuoteToASCII(e.Glyph))
 	}
 	b.WriteString("}\n")
 	return format.Source([]byte(b.String()))
