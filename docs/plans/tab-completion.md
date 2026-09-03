@@ -54,21 +54,21 @@ this extends), `newgrounds-inc/ngchat`
 
 ### Phase 2: commands
 
-- [ ] `complete.Commands`: hand-ported table of the web's 31 commands
+- [x] `complete.Commands`: hand-ported table of the web's 32 commands
       plus `/who` (name, aliases, access, description), trigger
       `^/[a-z0-9/*]*$` on the whole line before the cursor, prefix match
       with `*` wildcard against name and aliases, alphabetical,
       replacement `/name ` (canonical name even when an alias matched).
-- [ ] Model keeps `isAdmin`/`isChatMod` from `authenticated`, refreshed
+- [x] Model keeps `isAdmin`/`isChatMod` from `authenticated`, refreshed
       on `revalidated`; commands above the viewer's rank are hidden.
-- [ ] Row shows `/kick (k)` and the description dimmed.
-- [ ] Tests: access filter per rank, rank change on `revalidated`,
+- [x] Row shows `/kick (k)` and the description dimmed.
+- [x] Tests: access filter per rank, rank change on `revalidated`,
       alias match inserts the canonical name, wildcard, `/` alone
       lists everything the viewer may use, `/x y` mid-line does not
       trigger.
-- [ ] Sync note in `AGENTS.md` next to the protocol one: the table is
+- [x] Sync note in `AGENTS.md` next to the protocol one: the table is
       reconciled by hand against upstream `slash_commands.ts`.
-- [ ] Docs: README, manual test plan, CHANGELOG.
+- [x] Docs: README, manual test plan, CHANGELOG.
 
 ### Phase 3: emotes (NG "dank memes")
 

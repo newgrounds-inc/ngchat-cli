@@ -101,6 +101,11 @@ screen or a reconnect loop.
 - [ ] Ban while connected, then reconnect: refused with the notice.
 - [ ] Idle timeout: stay silent for the server's idle window; the stop
       reason is `idle timeout` and there is no reconnect.
+- [ ] After the hourly renewal (section 6) revalidates with a changed
+      rank, the `/` command list follows: a promotion shows the
+      newly-available commands, a demotion hides them, with no
+      reconnect needed.
+- [ ] `/k` as a mod shows `/kick (k)`.
 
 ## 4. Chat basics (each platform; this is the terminal-dependent part)
 
@@ -125,6 +130,16 @@ screen or a reconnect loop.
 - [ ] `ctrl+t` shows `HH:MM` local-time prefixes; toggles off again.
 - [ ] `esc` does nothing (it used to quit).
 - [ ] MOTD renders once below the backfill on join.
+- [ ] `/` alone lists every command you may use, alphabetical, each
+      with its description dimmed.
+- [ ] `/k` as a regular user shows nothing.
+- [ ] Accepting a candidate matched by an alias (e.g. `airhorn` for
+      `/ah`) inserts the full canonical name, never the alias.
+- [ ] `hi /k` (a `/` mid-line, not the first character) opens nothing.
+- [ ] Move the cursor into the middle of a typed name (e.g. `/ki|ck`,
+      cursor after "ki") and accept: only the span up to the cursor is
+      replaced, and the "ck" typed after the cursor stays in place
+      after the inserted text.
 
 - [ ] The splash: the wordmark sweeps in over about 1.5 s, holds until
       online, then the chat screen replaces it with no residue. Any key

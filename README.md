@@ -78,7 +78,8 @@ to go back.
 - Typing `@` opens a completion list of the room's users (`tab`/
   `shift+tab` or the up/down arrows move, `enter` accepts, `esc`
   closes; a window under about 9 rows previews the candidate in the
-  line instead).
+  line instead). `/` as the first character completes slash commands
+  you may use (aliases match, the full name is inserted).
 - `/who` lists who is in the channel (mods marked `@`, away users
   dimmed). Every other slash command (`/me`, `/slap`, `/dm`, `/roll`,
   ...) goes to the server, which parses them.
