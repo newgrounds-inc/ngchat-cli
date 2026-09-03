@@ -126,6 +126,16 @@ screen or a reconnect loop.
 - [ ] `esc` does nothing (it used to quit).
 - [ ] MOTD renders once below the backfill on join.
 
+- [ ] The splash: the wordmark sweeps in over about 1.5 s, holds until
+      online, then the chat screen replaces it with no residue. Any key
+      skips it. `ngchat -no-splash` and `NGCHAT_NO_SPLASH=1` go straight
+      to chat. A window narrower than 40 columns shows no splash.
+- [ ] Colors match the site: orange status bar with dark text, soft
+      gold names, copper `@mods`, your own name blue, gold-on-dark
+      mention highlight, red `[DM]`. `NGCHAT_THEME=classic` turns names
+      NG gold and the bar the legacy orange; `NGCHAT_THEME=nope` exits
+      at once naming the valid themes.
+
 ## 5. Roster and mentions (once, two clients)
 
 - [ ] Status bar count matches the site's user list.
@@ -192,8 +202,14 @@ One row per terminal you have. Note bell, OSC 8, colors, and `ctrl+s`
 - [ ] Windows: Windows Terminal with PowerShell and with cmd.exe;
       legacy conhost (expect degraded colors, note what breaks); inside
       WSL as a Linux binary for comparison.
-- [ ] `TERM=dumb ngchat` or `NO_COLOR=1`: still readable, no raw escape
-      codes on screen.
+- [ ] `NO_COLOR=1`: still readable, no raw escape codes on screen; the
+      status bar and mention highlight are still reverse-video bars,
+      and the splash still sweeps in monochrome.
+- [ ] `TERM=dumb ngchat`: plain text throughout (no bars, no bold), no
+      raw escape codes on screen, splash still legible.
+- [ ] A 256-color terminal (`TERM=xterm-256color` without
+      `COLORTERM`): the theme downsamples to nearby colors, nothing
+      turns default-white.
 
 ## 9. Windows specifics (both VMs)
 

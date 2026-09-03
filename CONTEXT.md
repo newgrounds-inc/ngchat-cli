@@ -77,3 +77,29 @@ follow-up event that clients attach to the original message by ID.
 **Spoiler**:
 A message flagged to stay hidden until the reader deliberately reveals
 it.
+
+**Theme**:
+A named palette of *roles* (base, primary, secondary, accent, neutral,
+info, success, warning, error, username), the same roles the web
+client's DaisyUI theme declares. Widgets ask for a role, never a
+color. `ngchat` is the site's; `classic` is the legacy gold-on-black.
+
+**Role**:
+One named slot in a theme, with a meaning ("accent is what must stand
+out") decided once for every theme. Not a color: the color is what a
+theme puts in the slot.
+
+**Splash**:
+The opening screen: an *art* drawn in by an *effect* while the client
+connects. Ends when the effect finishes and the client is online, or
+after four seconds, or on any key.
+
+**Art**:
+A monochrome pixel bitmap the splash draws, two pixels per terminal
+row with half-block glyphs. Today the "NG CHAT" *wordmark*.
+
+**Effect**:
+How an art is drawn in over time: a pure function of elapsed time
+that returns one frame. Today *laser etch*, a beam that sweeps left to
+right and ignites the pixels it passes.
+

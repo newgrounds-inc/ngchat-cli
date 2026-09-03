@@ -51,7 +51,8 @@ verifying protocol or auth changes; reserve `cmd/ngchat` for UI work.
 ## Architecture
 
 Four layers, each one package, with a channel as the only seam between
-network and UI.
+network and UI, plus two small packages the UI draws with: `theme` and
+`splash`.
 
 **`internal/auth` — credentials, site login, chat JWTs.** `Site` wraps
 the site's `/api/v1/auth` routes with one in-memory cookie jar per run:
@@ -149,11 +150,41 @@ applies it to text and attributes (entities are decoded by then, so
 the UI, `FailError.Message`, and `cmd/smoke` call it on usernames, close
 reasons and site messages that never pass through `Text`.
 
+**`internal/theme` — colors by role.** A `Theme` carries the DaisyUI
+roles the web client's `styles.css` declares (base, primary,
+secondary, accent, neutral, info, success, warning, error) plus the
+chat-only `Username`; `ngchat` and `classic` are sRGB copies of the
+site's two blocks. The UI builds every style once from a theme
+(`newStyles`) and names roles, never colors, so a theme is a copy of
+numbers. Colors are exact; Bubble Tea's renderer downsamples them to
+the terminal and drops them under `NO_COLOR`, which is why the status
+bar and mention highlight also carry Reverse: the attribute survives
+where the color does not. The terminal's background is never painted
+(ADR 0005). `NGCHAT_THEME` picks a theme by name.
+
+**`internal/splash` — the opening screen.** Two seams: `Art`, a
+monochrome pixel bitmap drawn two pixels per row with half-block
+glyphs (today the "NG CHAT" wordmark from a 5×7 font, scaled by `Fit`
+to the largest of 1–4 that fits), and `Effect`, a pure function of
+elapsed time (`Frame(art, palette, t)`) whose timing is fixed so a
+wider terminal is not a slower splash. `LaserEtch` is the one effect:
+a beam sweeps in 1.1 s, pixels cool hot → warm → ink over 0.45 s,
+sparks are hashed from the frame index so frames are deterministic
+and testable. A `Palette` of four roles (ink, hot, warm, spark) is
+mapped from the theme, so an effect never sees a theme.
+
 **`internal/ui` — Bubble Tea.** `waitEvent` pumps one `client.Event` into
 the tea loop and reschedules itself, which is how the network goroutine and
 the UI loop stay decoupled. Transcript rows keep the raw `html` and convert
 on render, so toggling spoilers (`ctrl+s`) re-renders from source. Scrollback
-is the viewport's, not the terminal's.
+is the viewport's, not the terminal's. While `Model.splash` is non-nil
+the view is the splash (centered frame, state label, skip hint) and
+the chat layout is kept current underneath; `frameMsg` ticks it at
+30 fps, and it ends when the effect is done and the client is online,
+at `maxSplash` (4 s) regardless, on any key (consumed; `ctrl+c` still
+quits), or at once when the terminal is too small to fit the wordmark.
+A stop that leaves (signed out, access denied) quits through the
+splash like it does through the chat screen.
 
 ## Conventions
 

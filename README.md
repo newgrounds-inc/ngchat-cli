@@ -32,6 +32,7 @@ on Windows regularly, so use Windows Terminal and report what breaks.
 ngchat            # join #general
 ngchat -quiet     # same, without the terminal bell on mentions and DMs
 ngchat -debug     # also write redacted frames to a log; path printed on exit
+ngchat -no-splash # skip the opening animation (NGCHAT_NO_SPLASH=1 does the same)
 ngchat -version   # print the version and exit
 ```
 
@@ -80,6 +81,13 @@ to go back.
 - Mentions and DMs are highlighted and ring the terminal bell; `-quiet`
   keeps the highlight and drops the bell.
 - Links are clickable in terminals that support OSC 8 hyperlinks.
+- Colors follow the site's `ngchat` theme (orange status bar, soft gold
+  names, copper mods, your own name in blue). `NGCHAT_THEME=classic` is
+  the legacy gold-on-black. The terminal's own background is kept, so
+  a light background will look off.
+- The opening animation ends on any key; `-no-splash` or
+  `NGCHAT_NO_SPLASH=1` drops it, and a window under about 40×8 never
+  shows it.
 
 ## Development
 
