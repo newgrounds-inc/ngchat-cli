@@ -40,7 +40,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `*` wildcards, but the canonical name is always what gets inserted.
   Starting a word with `ng…`/`tf…` completes NG "dank meme" emote
   shortcodes from an embedded list generated from the site's own
-  emoticon data.
+  emoticon data. Typing `:shortname` completes emoji from an embedded
+  catalog generated the same way, each row showing the glyph next to
+  its shortname.
 - CI on every pull request and push to `main` (vet, race tests on
   Linux, macOS and best-effort Windows, `go mod tidy` drift, GoReleaser
   snapshot build); the release workflow runs the Linux and macOS tests

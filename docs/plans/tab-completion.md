@@ -88,17 +88,17 @@ this extends), `newgrounds-inc/ngchat`
 
 ### Phase 4: emoji
 
-- [ ] `gen` also writes `emoji_gen.go` (shortname, codepoints) from
+- [x] `gen` also writes `emoji_gen.go` (shortname, codepoints) from
       the upstream generated catalog.
-- [ ] `complete.Emoji`: trigger `\B:([+0-9a-z][-+_*0-9a-z]+)$`, three-tier
+- [x] `complete.Emoji`: trigger `\B:([+0-9a-z][-+_*0-9a-z]+)$`, three-tier
       ranking over shortnames, row shows the glyph then `:smile:`,
       replacement `:smile: `.
-- [ ] Glyph column: decode codepoints once at generate time into the
+- [x] Glyph column: decode codepoints once at generate time into the
       Go string, pad rows by display width so shortnames align under
       wide and double-width glyphs.
-- [ ] Tests: `:)` and `:D` never trigger, `http://` never triggers,
+- [x] Tests: `:)` and `:D` never trigger, `http://` never triggers,
       `:sm` ranks `:smile:` above `:sweat_smile:`, glyph row width.
-- [ ] Docs: README, manual test plan, CHANGELOG, sync note extended.
+- [x] Docs: README, manual test plan, CHANGELOG, sync note extended.
 
 ### Wrap
 

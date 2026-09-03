@@ -81,7 +81,9 @@ to go back.
   line instead). `/` as the first character completes slash commands
   you may use (aliases match, the full name is inserted). Starting a
   word with `ng…`/`tf…` completes NG "dank meme" emote shortcodes from
-  an embedded list, the same way.
+  an embedded list, the same way. Typing `:shortname` completes emoji
+  from an embedded catalog, each row showing the glyph next to its
+  shortname.
 - `/who` lists who is in the channel (mods marked `@`, away users
   dimmed). Every other slash command (`/me`, `/slap`, `/dm`, `/roll`,
   ...) goes to the server, which parses them.

@@ -147,6 +147,14 @@ screen or a reconnect loop.
 - [ ] `esc` on a word that opened the emote list keeps it quiet while
       you keep typing the same word, and it opens again on the next
       new word.
+- [ ] Typing `:smi` opens the emoji list with `:smile:` first; `enter`
+      accepts it, leaving `:smile: ` in the line.
+- [ ] The glyph column lines up for emoji-presentation glyphs: eyeball
+      `:woman_lifting_weights_tone1:` (a skin-tone glyph) and
+      `:detective:` (one of a handful the terminal may render
+      narrower than the column expects) against an ordinary row like
+      `:smile:`.
+- [ ] `:)`, `:D` and `:-)` open nothing.
 
 - [ ] The splash: the wordmark sweeps in over about 1.5 s, holds until
       online, then the chat screen replaces it with no residue. Any key
@@ -243,6 +251,11 @@ One row per terminal you have. Note bell, OSC 8, colors, and `ctrl+s`
 - [ ] A 256-color terminal (`TERM=xterm-256color` without
       `COLORTERM`): the theme downsamples to nearby colors, nothing
       turns default-white.
+- [ ] Emoji completion's glyph column (type `:smi`): glyphs render and
+      the shortname column lines up for ordinary rows on each terminal
+      above; also eyeball `:woman_lifting_weights_tone1:` and
+      `:detective:` and note which terminal, if any, renders either
+      narrower than the column expects.
 
 ## 9. Windows specifics (both VMs)
 
