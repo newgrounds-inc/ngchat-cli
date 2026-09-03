@@ -10,8 +10,8 @@ client-side decisions. The site-side implementation plan is
 
 ## Contract (agreed 2026-09-02, revised the same day after the site review)
 
-Two new routes, not three, under `/api/v1/auth/` inside the existing
-`api/v1` group (JSend, `EnforceJsonContentNegotiation`, CSRF from the
+Two new routes, not three (plus the logout route that landed with
+GH #4008), under `/api/v1/auth/` inside the existing `api/v1` group (JSend, `EnforceJsonContentNegotiation`, CSRF from the
 `web` group). Responses use the site's `JsendResponse` envelope:
 `{"status":"success","data":{...}}`,
 `{"status":"fail","data":{...}}`,
@@ -121,13 +121,26 @@ Outcomes:
 No resend endpoint in the MVP. An emailed code expires after 1 hour;
 after that the site answers 422 and the CLI restarts from `login`.
 
+### `POST /api/v1/auth/logout` (site GH #4008)
+
+`ngchat logout`. Same jar, same CSRF rules; the jar is seeded with the
+stored remember cookie and primed. The guard deletes this device's
+`users_tokens` rows and invalidates the session, so a copy of the
+cookie kept anywhere else stops minting.
+
+| HTTP | JSend | `data` | CLI action |
+| --- | --- | --- | --- |
+| 200 | success | `null` | revoked; clear the local copies, print `logged out` |
+| 401 | fail | `{"auth": ["Unauthenticated."]}` | already a guest (password changed, logged out elsewhere): same as success |
+| other / no answer | | | keep clearing locally, but exit 1 and say the cookie is still valid on the site |
+
 ### `POST /api/v1/auth/service-token` (exists today)
 
 Used hourly for re-mint. Request `{"service": "chat"}` with the jar and
 `X-XSRF-TOKEN`. Success `data` is `{"service","token","expires_in"}`.
 
-- `401` means the remember token is gone (logout elsewhere is not
-  possible today, so: password changed, or the CLI logged out). The
+- `401` means the remember token is gone (password changed, or a
+  logout ran, from the CLI or the site). The
   CLI treats it as **signed out**: stop the client, exit the TUI, print
   `run ngchat login`. Never retry.
 - `419` means CSRF mismatch: re-prime, retry once.
@@ -143,8 +156,9 @@ Used hourly for re-mint. Request `{"service": "chat"}` with the jar and
 - The two "must fix before exposing login" items from the original
   contract were wrong and are withdrawn; see the corrections block
   below.
-- No user-facing session or device revocation exists today. Worth a
-  follow-up on the site, not required for the CLI.
+- Device revocation is `POST /api/v1/auth/logout` (GH #4008, above);
+  a user-facing list of devices does not exist yet and is not required
+  for the CLI.
 
 ---
 

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/newgrounds-inc/ngchat-cli/internal/render"
 )
 
 // maxCodeAttempts is how many wrong two-factor codes are accepted before
@@ -131,7 +133,7 @@ func challenge(ctx context.Context, site *Site, p Prompter, out io.Writer,
 	switch res.TwoFactor {
 	case "email":
 		fmt.Fprintf(out, "A code was emailed to %s; it is valid for one hour.\n",
-			res.ObfuscatedEmail)
+			render.Line(res.ObfuscatedEmail))
 	case "totp":
 		fmt.Fprintln(out, "Enter the code from your authenticator app, "+
 			"or a recovery code.")

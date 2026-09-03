@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -199,6 +200,20 @@ func (fs *fakeSite) handle(w http.ResponseWriter, r *http.Request) {
 			fs.completeLogin(w)
 		}
 		write(w, status, resp)
+	case logoutPath:
+		if !fs.authed && !remembered {
+			write(w, 401, jsendFail("auth", "Unauthenticated."))
+			return
+		}
+		// The device's token rows are gone: the old remember value
+		// authenticates nothing from here on, whoever presents it.
+		fs.authed = false
+		fs.remember = "rotated-after-logout"
+		fs.rotate()
+		fs.setSessionCookies(w)
+		http.SetCookie(w, &http.Cookie{Name: rememberCookie, Value: "",
+			Path: "/", MaxAge: -1})
+		write(w, 200, `{"status":"success","data":null}`)
 	case serviceTokenPath:
 		if !fs.authed && !remembered {
 			write(w, 401, jsendFail("auth", "Unauthenticated."))
@@ -615,6 +630,113 @@ func TestNewSiteRejectsBadURL(t *testing.T) {
 	}
 }
 
+// TestNewSiteRequiresTLSOffLoopback: the jar's cookies and the login
+// password ride on every request, so a plaintext origin is only allowed
+// when it is the local dev stack.
+func TestNewSiteRequiresTLSOffLoopback(t *testing.T) {
+	for _, u := range []string{
+		"http://www.newgrounds.com", "http://dev.example.com:8080",
+		"ftp://www.newgrounds.com", "http://10.0.0.5",
+	} {
+		if _, err := NewSite(u); err == nil {
+			t.Errorf("NewSite(%q) accepted a plaintext origin", u)
+		}
+	}
+	for _, u := range []string{
+		"https://www.newgrounds.com", "HTTPS://Dev.Example.com",
+		"http://localhost:8000", "http://127.0.0.1:8000", "http://[::1]:8000",
+	} {
+		if _, err := NewSite(u); err != nil {
+			t.Errorf("NewSite(%q) = %v, want ok", u, err)
+		}
+	}
+}
+
+// TestCredentialKeyIsPerSite: production keeps the bare slot every
+// earlier binary wrote; any other origin gets its own, so its login
+// neither replaces the production cookie nor receives it.
+func TestCredentialKeyIsPerSite(t *testing.T) {
+	tests := map[string]string{
+		"https://www.newgrounds.com":     RememberKey,
+		"https://WWW.newgrounds.com/":    RememberKey,
+		"https://www.newgrounds-d.com":   RememberKey + "@www.newgrounds-d.com",
+		"http://localhost:8000":          RememberKey + "@localhost:8000",
+		"https://staging.newgrounds.com": RememberKey + "@staging.newgrounds.com",
+	}
+	for u, want := range tests {
+		s, err := NewSite(u)
+		if err != nil {
+			t.Fatalf("NewSite(%q): %v", u, err)
+		}
+		if got := s.CredentialKey(); got != want {
+			t.Errorf("CredentialKey(%q) = %q, want %q", u, got, want)
+		}
+	}
+}
+
+// TestRememberCookieIsSecureOnHTTPS: a redirect to a plaintext URL on
+// the same host must not carry the credential.
+func TestRememberCookieIsSecureOnHTTPS(t *testing.T) {
+	s, err := NewSite("https://www.newgrounds.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetRemember("v")
+	if _, ok := s.Remember(); !ok {
+		t.Fatal("remember cookie not in the jar for the https origin")
+	}
+	plaintext := &url.URL{Scheme: "http", Host: "www.newgrounds.com", Path: "/"}
+	for _, c := range s.jar.Cookies(plaintext) {
+		if c.Name == rememberCookie {
+			t.Error("remember cookie offered to a plaintext URL")
+		}
+	}
+}
+
+// TestLogoutRevokesRememberCookie proves the property ADR 0003 promises:
+// after logout a copy of the old cookie kept elsewhere cannot mint.
+func TestLogoutRevokesRememberCookie(t *testing.T) {
+	fs := newFakeSite(t)
+	s := fs.site(t)
+	s.SetRemember(fakeRemember)
+	if err := s.Logout(context.Background()); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if fs.count(logoutPath) != 1 {
+		t.Errorf("logout calls = %d, want 1", fs.count(logoutPath))
+	}
+
+	copied := fs.site(t)
+	copied.SetRemember(fakeRemember)
+	if _, err := copied.ServiceToken(context.Background(), ChatService); !errors.Is(err, ErrSignedOut) {
+		t.Errorf("a retained copy of the cookie still mints: %v", err)
+	}
+}
+
+// TestLogoutOnGuestJarIsNotAnError: a cookie the site already revoked
+// (password change, logout elsewhere) answers 401, which is the state
+// logout is asking for.
+func TestLogoutOnGuestJarIsNotAnError(t *testing.T) {
+	fs := newFakeSite(t)
+	s := fs.site(t)
+	s.SetRemember("revoked-value")
+	if err := s.Logout(context.Background()); err != nil {
+		t.Errorf("Logout on a guest jar = %v, want nil", err)
+	}
+}
+
+// TestLogoutOfflineFails: no reachable site means no revocation, and
+// the caller must hear that rather than a silent local-only success.
+func TestLogoutOfflineFails(t *testing.T) {
+	fs := newFakeSite(t)
+	s := fs.site(t)
+	s.SetRemember(fakeRemember)
+	fs.srv.Close()
+	if err := s.Logout(context.Background()); err == nil {
+		t.Error("Logout against a closed server reported success")
+	}
+}
+
 func TestSiteRespectsContext(t *testing.T) {
 	fs := newFakeSite(t)
 	s := fs.site(t)
@@ -650,5 +772,84 @@ func TestFailErrorMessagePreference(t *testing.T) {
 				t.Errorf("Message() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSiteNeverFollowsRedirects: cookie scope ignores the port and a
+// 307 re-sends the body, so a redirect from the site would hand the
+// jar and the login JSON to wherever it pointed.
+func TestSiteNeverFollowsRedirects(t *testing.T) {
+	var hits atomic.Int32
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		raw, _ := io.ReadAll(r.Body)
+		t.Errorf("redirect target reached with cookie %q body %q",
+			r.Header.Get("Cookie"), raw)
+		write(w, 200, `{"status":"success","data":{"token":"stolen"}}`)
+	}))
+	t.Cleanup(sink.Close)
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == mePath {
+			http.SetCookie(w, &http.Cookie{Name: xsrfCookie, Value: "x", Path: "/"})
+			write(w, 401, jsendFail("auth", "Unauthenticated."))
+			return
+		}
+		http.Redirect(w, r, sink.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(origin.Close)
+
+	s, err := NewSite(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetRemember("remember-secret")
+	_, err = s.Login(context.Background(), "bob", "password-secret")
+	var fail *FailError
+	if !errors.As(err, &fail) || fail.Status != http.StatusTemporaryRedirect {
+		t.Errorf("Login = %v, want a FailError carrying the 307", err)
+	}
+	if _, err := s.ServiceToken(context.Background(), ChatService); err == nil {
+		t.Error("ServiceToken followed a redirect to a token")
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("redirect target was contacted %d times", n)
+	}
+}
+
+// TestCheckChatURL: the chat JWT goes to this URL as the first frame,
+// so it must be wss (or loopback) and on the site's own domain.
+func TestCheckChatURL(t *testing.T) {
+	tests := []struct {
+		site, chat string
+		ok         bool
+	}{
+		{"https://www.newgrounds.com", "wss://chat.newgrounds.com/ws", true},
+		{"https://www.newgrounds-d.com", "wss://chat.newgrounds-d.com/ws", true},
+		{"https://www.newgrounds.com", "WSS://Chat.Newgrounds.com/ws", true},
+		{"http://localhost:8000", "ws://localhost:8080/ws", true},
+		{"http://127.0.0.1:8000", "ws://[::1]:8080/ws", true},
+		{"https://10.0.0.5", "wss://10.0.0.5/ws", true},
+
+		{"https://www.newgrounds.com", "ws://chat.newgrounds.com/ws", false},
+		{"https://www.newgrounds.com", "wss://chat.newgrounds-d.com/ws", false},
+		{"https://www.newgrounds.com", "wss://newgrounds.com.evil.example/ws", false},
+		{"https://www.newgrounds.com", "wss://evil.example/ws", false},
+		{"https://www.newgrounds.com", "ws://localhost:8080/ws", false},
+		{"http://localhost:8000", "wss://chat.newgrounds.com/ws", false},
+		{"https://10.0.0.5", "wss://10.0.0.6/ws", false},
+		{"https://www.newgrounds.com", "https://chat.newgrounds.com/ws", false},
+		{"https://www.newgrounds.com", "", false},
+		{"https://www.newgrounds.com", "chat", false},
+	}
+	for _, tc := range tests {
+		s, err := NewSite(tc.site)
+		if err != nil {
+			t.Fatalf("NewSite(%q): %v", tc.site, err)
+		}
+		err = s.CheckChatURL(tc.chat)
+		if (err == nil) != tc.ok {
+			t.Errorf("site %s chat %q: err = %v, want ok=%v", tc.site, tc.chat, err, tc.ok)
+		}
 	}
 }

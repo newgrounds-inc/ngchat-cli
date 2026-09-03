@@ -33,10 +33,13 @@ step completes.
 
 ## Consequences
 
-- The keyring (or the `0600` fallback file) holds one value:
-  `ng_remember`, a 400-day cookie backed by a `users_tokens` row that
-  expires after two years idle. Only `ngchat logout` or a password change
-  invalidates it.
+- The keyring (or the `0600` fallback file) holds one value per site
+  (ADR 0004): `ng_remember`, a 400-day cookie backed by a `users_tokens`
+  row that expires after two years idle. Only `ngchat logout` or a
+  password change invalidates it: logout calls
+  `POST /api/v1/auth/logout` with the jar, which deletes the row, before
+  clearing the local copies, and exits non-zero if the site did not
+  answer, since a copy of the cookie would still mint until it does.
 - Each run creates one fresh site session row (pruned after a day) and
   costs one hit of the guest `api` limiter (30/min per IP) to prime.
 - The `service_token` limiter (10/min per user or IP) counts before auth

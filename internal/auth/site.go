@@ -7,21 +7,30 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"golang.org/x/net/publicsuffix"
+
+	"github.com/newgrounds-inc/ngchat-cli/internal/render"
 )
 
 // Routes under the site's /api/v1/auth group (docs/site-login-endpoints.md).
 const (
 	mePath           = "/api/v1/auth/me"
 	loginPath        = "/api/v1/auth/login"
+	logoutPath       = "/api/v1/auth/logout"
 	twoFactorPath    = "/api/v1/auth/two-factor"
 	serviceTokenPath = "/api/v1/auth/service-token"
+
+	// productionHost is the origin whose credential lives under the bare
+	// RememberKey; every other site gets a slot of its own.
+	productionHost = "www.newgrounds.com"
 
 	// rememberCookie is the 400-day cookie the site sets on a
 	// remember=true login. Its value is the only credential persisted.
@@ -61,11 +70,13 @@ var knownFields = []string{
 }
 
 // Message returns the first message of the first known field, else the
-// first message of any field, else the HTTP status text.
+// first message of any field, else the HTTP status text. The text is
+// the site's and goes straight to the terminal, so it is sanitized here
+// (render.Line) rather than at every print site.
 func (e *FailError) Message() string {
 	for _, k := range knownFields {
 		if msgs := e.Fields[k]; len(msgs) > 0 {
-			return msgs[0]
+			return render.Line(msgs[0])
 		}
 	}
 	keys := make([]string, 0, len(e.Fields))
@@ -75,7 +86,7 @@ func (e *FailError) Message() string {
 	sort.Strings(keys)
 	for _, k := range keys {
 		if msgs := e.Fields[k]; len(msgs) > 0 {
-			return msgs[0]
+			return render.Line(msgs[0])
 		}
 	}
 	return http.StatusText(e.Status)
@@ -113,15 +124,91 @@ type Site struct {
 }
 
 // NewSite builds a Site for baseURL (e.g. https://www.newgrounds.com).
+// The scheme must be https unless the host is loopback: the remember
+// cookie and, at login, the password ride on every request, and a
+// plaintext origin would hand them to the network.
 func NewSite(baseURL string) (*Site, error) {
 	base, err := url.Parse(baseURL)
 	if err != nil || base.Host == "" {
 		return nil, fmt.Errorf("invalid site URL %q", baseURL)
 	}
+	if err := RequireTLS(base, "https"); err != nil {
+		return nil, fmt.Errorf("site URL %q: %w", baseURL, err)
+	}
 	base.Path = ""
+	base.Host = strings.ToLower(base.Host)
 	s := &Site{base: base}
 	s.resetJar()
 	return s, nil
+}
+
+// RequireTLS rejects u unless its scheme is secure (the https of an
+// http/https pair, the wss of a ws/wss pair) or its host is loopback,
+// where plaintext is the local dev stack talking to itself.
+func RequireTLS(u *url.URL, secure string) error {
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == secure || IsLoopback(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("scheme %q is not allowed off loopback; use %s", u.Scheme, secure)
+}
+
+// IsLoopback reports whether host names the local machine: "localhost"
+// or a loopback IP literal.
+func IsLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// CheckChatURL rejects a chat endpoint the site's token must not go to:
+// the scheme must be wss (or the host loopback), and the chat host must
+// belong to the same registrable domain as the site (chat.newgrounds.com
+// for www.newgrounds.com), a loopback site pairing only with a loopback
+// chat host and an IP-literal site only with the same literal. The chat
+// JWT is minted from the site's cookie and sent as the first frame, so
+// this runs before any mint.
+func (s *Site) CheckChatURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid chat URL %q", raw)
+	}
+	if err := RequireTLS(u, "wss"); err != nil {
+		return fmt.Errorf("chat URL %q: %w", raw, err)
+	}
+	siteHost, chatHost := s.base.Hostname(), strings.ToLower(u.Hostname())
+	switch {
+	case IsLoopback(siteHost):
+		if IsLoopback(chatHost) {
+			return nil
+		}
+	case net.ParseIP(siteHost) != nil:
+		if chatHost == siteHost {
+			return nil
+		}
+	default:
+		siteDomain, err1 := publicsuffix.EffectiveTLDPlusOne(siteHost)
+		chatDomain, err2 := publicsuffix.EffectiveTLDPlusOne(chatHost)
+		if err1 == nil && err2 == nil && siteDomain == chatDomain {
+			return nil
+		}
+	}
+	return fmt.Errorf("chat URL %q is not on the site's domain (%s)", raw, siteHost)
+}
+
+// CredentialKey names the credential-store slot for this site: the bare
+// RememberKey for production, "ng_remember@<host>" for anything else.
+// A remember cookie is a bearer for the origin that issued it, so a
+// dev or staging login never overwrites the production one and, more
+// to the point, the production one is never sent anywhere but
+// production when NGCHAT_SITE_URL points elsewhere (ADR 0004).
+func (s *Site) CredentialKey() string {
+	if s.base.Host == productionHost {
+		return RememberKey
+	}
+	return RememberKey + "@" + s.base.Host
 }
 
 // resetJar starts a fresh jar, re-applying any seeded cookies so the dev
@@ -130,7 +217,17 @@ func (s *Site) resetJar() {
 	jar, _ := cookiejar.New(&cookiejar.Options{
 		PublicSuffixList: publicsuffix.List})
 	s.jar = jar
-	s.http = &http.Client{Jar: jar, Timeout: 30 * time.Second}
+	s.http = &http.Client{
+		Jar:     jar,
+		Timeout: 30 * time.Second,
+		// The API never redirects, and following one would carry the
+		// jar (cookie scope ignores the port) and, on a 307, the login
+		// body to wherever it points. A redirect is returned as the
+		// non-2xx response it is and surfaces as a FailError.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	if len(s.seeds) > 0 {
 		s.jar.SetCookies(s.base, s.seeds)
 	}
@@ -149,10 +246,25 @@ func (s *Site) SeedCookies(header string) error {
 }
 
 // SetRemember seeds the jar with a stored remember cookie so the first
-// service-token call of a run authenticates.
+// service-token call of a run authenticates. On an https site the cookie
+// is marked Secure, so a redirect to a plaintext URL cannot carry it.
 func (s *Site) SetRemember(value string) {
 	s.jar.SetCookies(s.base, []*http.Cookie{
-		{Name: rememberCookie, Value: value, Path: "/"}})
+		{Name: rememberCookie, Value: value, Path: "/",
+			Secure: s.base.Scheme == "https"}})
+}
+
+// Logout revokes this device's remember token on the site (the token
+// rows behind the jar's cookies are deleted, so a copy kept elsewhere
+// stops minting) and ends the session. A 401 means the jar is already a
+// guest, which is the state being asked for, so it is not an error.
+func (s *Site) Logout(ctx context.Context) error {
+	err := s.post(ctx, logoutPath, map[string]any{}, nil)
+	var fail *FailError
+	if errors.As(err, &fail) && fail.Status == http.StatusUnauthorized {
+		return nil
+	}
+	return err
 }
 
 // Remember returns the remember cookie currently in the jar, if any.
