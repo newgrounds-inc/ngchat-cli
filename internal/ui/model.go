@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
+	"github.com/newgrounds-inc/ngchat-cli/internal/complete"
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 	"github.com/newgrounds-inc/ngchat-cli/internal/render"
 	"github.com/newgrounds-inc/ngchat-cli/internal/splash"
@@ -54,7 +56,7 @@ const (
 // theme swap touches nothing below this.
 type styles struct {
 	status, user, modUser, self, mention, dm, event, spoiler, err,
-	help, time, away lipgloss.Style
+	help, time, away, pick lipgloss.Style
 }
 
 // newStyles maps theme roles onto the transcript. The status bar and
@@ -82,6 +84,11 @@ func newStyles(t theme.Theme) styles {
 		help:    faint,
 		time:    faint,
 		away:    faint,
+		// pick highlights the selected completion row the same way the
+		// status bar reads as a bar under NO_COLOR: color plus Reverse,
+		// so the attribute survives where the color does not.
+		pick: lipgloss.NewStyle().Reverse(true).
+			Foreground(t.Primary).Background(t.PrimaryContent),
 	}
 }
 
@@ -101,6 +108,38 @@ type item struct {
 type typingState struct {
 	username string
 	at       time.Time
+}
+
+// chatConn is the seam over the network client that sending goes
+// through, so tests can inject a fake and observe what was sent
+// without a real socket. *client.Client satisfies it.
+type chatConn interface {
+	SendChat(text string) error
+	SendTyping()
+}
+
+// completionState is the open completion list, or nil when none is
+// open. index, top and end are all in terms of the candidates and span
+// of res, which is frozen until the next recompute.
+type completionState struct {
+	res complete.Result
+	// index is the highlighted candidate.
+	index int
+	// top is the first visible candidate row, kept so index always
+	// stays inside the drawn window.
+	top int
+	// end is the current end of the span in the line: normally
+	// res.End, but no-list mode advances it as cycling writes and
+	// replaces a preview in place.
+	end int
+	// previewed is no-list mode's memory that a preview has already
+	// been written once, so the very first navigation key can *show*
+	// the already-selected candidate (index 0) without first *moving*
+	// past it the way a visible list's first tab does — the list mode
+	// highlight is visible from the moment it opens, so its first tab
+	// has something to move away from; a no-list open has shown
+	// nothing yet.
+	previewed bool
 }
 
 // Options configures the UI beyond the client it wraps.
@@ -131,9 +170,17 @@ type splashState struct {
 // Model is the Bubble Tea root model.
 type Model struct {
 	chat    *client.Client
+	conn    chatConn // chat behind the seam tests can fake; nil if chat is nil
 	channel string
 	quiet   bool
 	bell    io.Writer // where the BEL byte goes; the terminal in production
+
+	// completion is the open completion list, nil when closed.
+	completion *completionState
+	engine     complete.Engine
+	// sources is nil in production until phase 1 wires the roster in;
+	// tests inject a stub.
+	sources []complete.Source
 
 	items          []item
 	revealSpoilers bool
@@ -180,6 +227,12 @@ func New(chat *client.Client, opts Options) Model {
 		typing:  map[string]typingState{},
 		users:   map[int]protocol.ChannelUser{},
 		st:      newStyles(th),
+	}
+	// A nil *client.Client stored in the chatConn interface would not
+	// compare equal to nil (a typed nil is a non-nil interface), so the
+	// guard has to happen here rather than in every send site.
+	if chat != nil {
+		m.conn = chat
 	}
 	if opts.Splash != nil {
 		m.splash = &splashState{
@@ -258,9 +311,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.endSplash()
 			return m, nil
 		}
+		if m.completion != nil && m.updateCompletion(msg) {
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
+		case "tab", "shift+tab":
+			// Reaching here means no completion is open (an open one is
+			// handled above), and tab carries no printable Text, so the
+			// textinput would insert nothing — but SendTyping still
+			// fired for it. Consume it as a true no-op instead.
+			return m, nil
 		case "ctrl+s":
 			m.revealSpoilers = !m.revealSpoilers
 			m.refresh(false)
@@ -283,21 +345,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if isWho(text) {
 				m.push(item{kind: "event", text: m.whoText()})
 				m.input.Reset()
+				m.recompute()
 				return m, nil
 			}
-			if err := m.chat.SendChat(text); err != nil {
+			if m.conn == nil {
+				m.push(item{kind: "event",
+					text: m.st.err.Render("send failed: not connected")})
+				return m, nil
+			}
+			if err := m.conn.SendChat(text); err != nil {
 				m.push(item{kind: "event",
 					text: m.st.err.Render("send failed: " + err.Error())})
 				return m, nil
 			}
 			m.input.Reset()
+			m.recompute()
 			return m, nil
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
-		if m.input.Value() != "" {
-			m.chat.SendTyping()
+		if m.conn != nil && m.input.Value() != "" {
+			m.conn.SendTyping()
 		}
+		m.recompute()
 		return m, cmd
 
 	case tickMsg:
@@ -593,12 +663,13 @@ func (m *Model) push(it item) {
 	m.refresh(true)
 }
 
-// layout applies terminal dimensions to the widgets.
+// layout applies terminal dimensions to the widgets. It also records
+// w and h on the model itself: listRows needs the current height even
+// when a test calls layout directly rather than through a
+// tea.WindowSizeMsg.
 func (m *Model) layout(w, h int) {
-	inputHeight := 1
-	statusHeight := 1
-	helpHeight := 1
-	vh := max(1, h-inputHeight-statusHeight-helpHeight)
+	m.width, m.height = w, h
+	vh := m.viewportHeight()
 	if !m.ready {
 		m.vp = viewport.New(viewport.WithWidth(w), viewport.WithHeight(vh))
 		m.ready = true
@@ -608,6 +679,327 @@ func (m *Model) layout(w, h int) {
 	}
 	m.input.SetWidth(max(10, w-4))
 	m.refresh(false)
+	// A resize can change listRows (more or fewer rows to spare) without
+	// the candidate count changing, which is exactly the case
+	// cycleCompletion's own window math never had to handle before: top
+	// must be reclamped or a shrink can leave the highlight outside the
+	// drawn window, and a later grow can walk completionView's loop past
+	// the end of Candidates.
+	m.clampWindow()
+}
+
+// viewportHeight is the transcript's row count for the model's current
+// height: the fixed chrome (status, input, help) plus whatever the
+// open completion list currently reserves. Shared by layout and
+// relayout so the two never drift into computing it differently.
+func (m Model) viewportHeight() int {
+	const chrome = 1 + 1 + 1 // status + input + help
+	return max(1, m.height-chrome-m.listHeight())
+}
+
+// relayout resizes the viewport for the current completion state
+// without losing the reader's scroll position. SetHeight alone leaves
+// the content unclamped, and refresh(false) jumps to the bottom on
+// every call, which would fight a reader who scrolled up right as the
+// list opened or closed underneath them: it is called only when the
+// list changes, so GotoBottom only fires if the reader was already at
+// the bottom — or if shrinking the viewport left it scrolled past the
+// bottom, which SetHeight does not reclamp on its own (bubbles v2.2.1).
+func (m *Model) relayout() {
+	if !m.ready {
+		return
+	}
+	atBottom := m.vp.AtBottom()
+	m.vp.SetHeight(m.viewportHeight())
+	if atBottom || m.vp.PastBottom() {
+		m.vp.GotoBottom()
+	}
+}
+
+// listRows is how many candidate rows the open completion list gets.
+// budget is the room left for a list at all once the fixed chrome
+// (status, input, help) and a 3-row floor for the transcript are taken
+// out; below 3 there is not enough to spare and no list is drawn at
+// all (no-list mode — see noList), however few candidates there are.
+// At or above it, the list still takes at most 5 rows and never more
+// than there are candidates.
+func (m Model) listRows() int {
+	if m.completion == nil {
+		return 0
+	}
+	budget := m.height - 3 - 3
+	if budget < 3 {
+		return 0
+	}
+	n := len(m.completion.res.Candidates)
+	if n > 5 {
+		n = 5
+	}
+	if n > budget {
+		n = budget
+	}
+	return n
+}
+
+// listHeight is the rows the list (header plus candidate rows) takes
+// from the viewport, or 0 when nothing is drawn.
+func (m Model) listHeight() int {
+	if n := m.listRows(); n >= 1 {
+		return n + 1
+	}
+	return 0
+}
+
+// noList reports whether completion is open but the terminal is too
+// small to draw a list: cycling still works, but as an in-line preview
+// rather than a dropdown (see cycleCompletion).
+func (m Model) noList() bool {
+	return m.completion != nil && m.listRows() < 1
+}
+
+// clampWindow keeps the completion window's top valid whenever
+// listRows or the candidate count might have changed size out from
+// under it — a terminal resize while scrolled through a long list is
+// the main case, since layout used to leave top untouched across one.
+// top is clamped into [0, len(candidates)-rows], then nudged so index
+// still falls inside [top, top+rows); with no list open, or no room
+// for one, top is reset to 0 since it means nothing. Called from
+// layout (after a resize) and cycleCompletion (after every move);
+// completionView never calls it — drawing the list must stay
+// read-only, and every path that can invalidate top already reclamps
+// it before a draw could see it.
+func (m *Model) clampWindow() {
+	cs := m.completion
+	if cs == nil {
+		return
+	}
+	rows := m.listRows()
+	if rows < 1 {
+		cs.top = 0
+		return
+	}
+	maxTop := len(cs.res.Candidates) - rows
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if cs.top > maxTop {
+		cs.top = maxTop
+	} else if cs.top < 0 {
+		cs.top = 0
+	}
+	if cs.index < cs.top {
+		cs.top = cs.index
+	} else if cs.index >= cs.top+rows {
+		cs.top = cs.index - rows + 1
+	}
+}
+
+// byteOffset converts a rune index (what textinput.Position returns)
+// to a byte offset into s (what complete.Engine and Source consume).
+func byteOffset(s string, runeIdx int) int {
+	runes := []rune(s)
+	if runeIdx < 0 {
+		runeIdx = 0
+	} else if runeIdx > len(runes) {
+		runeIdx = len(runes)
+	}
+	return len(string(runes[:runeIdx]))
+}
+
+// runeOffset converts a byte offset into s to a rune index (what
+// textinput.SetCursor consumes). byteIdx is expected to fall on a rune
+// boundary, which every offset this package produces does: they come
+// from len() of whole inserted strings, never a raw cursor guess.
+func runeOffset(s string, byteIdx int) int {
+	if byteIdx > len(s) {
+		byteIdx = len(s)
+	} else if byteIdx < 0 {
+		byteIdx = 0
+	}
+	return len([]rune(s[:byteIdx]))
+}
+
+// recompute re-evaluates completion from the current line and cursor.
+// It runs on every keystroke that reaches the input, but never while an
+// open list is being navigated: updateCompletion returns before this is
+// reached for tab/shift+tab/up/down/esc, which is what keeps the
+// candidate set from changing out from under the highlighted index.
+func (m *Model) recompute() {
+	value := m.input.Value()
+	cursor := byteOffset(value, m.input.Position())
+	res, ok := m.engine.Complete(value, cursor, m.sources)
+	wasOpen := m.completion != nil
+	prevN := 0
+	if wasOpen {
+		prevN = len(m.completion.res.Candidates)
+	}
+	if !ok {
+		m.completion = nil
+		if wasOpen {
+			m.relayout()
+		}
+		return
+	}
+	m.completion = &completionState{res: res, index: 0, top: 0, end: res.End}
+	if !wasOpen || prevN != len(res.Candidates) {
+		m.relayout()
+	}
+}
+
+// updateCompletion applies a key to an open completion list and reports
+// whether it did: ctrl+c and every key besides the ones below report
+// false so the caller falls through to its own handling (ctrl+c must
+// still quit with a list open). Navigation and dismissal never touch
+// the network; only accept does, and never sends the line itself.
+func (m *Model) updateCompletion(msg tea.KeyPressMsg) bool {
+	cs := m.completion
+	switch msg.String() {
+	case "tab":
+		if len(cs.res.Candidates) == 1 {
+			m.acceptCompletion()
+		} else {
+			m.cycleCompletion(1)
+		}
+		return true
+	case "down":
+		m.cycleCompletion(1)
+		return true
+	case "shift+tab", "up":
+		m.cycleCompletion(-1)
+		return true
+	case "enter":
+		m.acceptCompletion()
+		return true
+	case "esc":
+		m.engine.Dismiss(cs.res)
+		m.completion = nil
+		m.relayout()
+		return true
+	}
+	return false
+}
+
+// cycleCompletion moves the highlight by delta with wrap, keeping it
+// inside the visible window. In no-list mode there is no window to
+// keep it inside; instead the very first call after opening only
+// reveals the already-selected candidate (index 0), since nothing has
+// been shown yet, and every call after that moves first, then writes —
+// the same order a visible list's highlight already implies before any
+// key is pressed. previewed only flips once writePreview actually
+// writes something: a candidate refused for CharLimit (see
+// writePreview) must not count as the reveal, or the very next key
+// would advance past index 0 having shown the user nothing at all.
+func (m *Model) cycleCompletion(delta int) {
+	cs := m.completion
+	n := len(cs.res.Candidates)
+	if m.noList() {
+		if cs.previewed {
+			cs.index = (cs.index + delta + n) % n
+		}
+		if m.writePreview() {
+			cs.previewed = true
+		}
+		return
+	}
+	cs.index = (cs.index + delta + n) % n
+	m.clampWindow()
+}
+
+// spliceValue replaces value[start:end] (byte offsets) with text and
+// writes the result back into the input widget.
+func (m *Model) spliceValue(start, end int, text string) {
+	v := m.input.Value()
+	if start < 0 {
+		start = 0
+	}
+	if end > len(v) {
+		end = len(v)
+	}
+	m.input.SetValue(v[:start] + text + v[end:])
+}
+
+// spliceExceedsLimit reports whether replacing value[start:end] (byte
+// offsets) with text would leave more runes than the input's CharLimit
+// allows (CharLimit <= 0 means unlimited). textinput.SetValue enforces
+// the limit itself, but silently, by truncating the *end* of the
+// result — which throws away characters the user typed rather than the
+// completion that caused the overflow, so callers must check first and
+// refuse the splice instead.
+func (m *Model) spliceExceedsLimit(start, end int, text string) bool {
+	limit := m.input.CharLimit
+	if limit <= 0 {
+		return false
+	}
+	v := m.input.Value()
+	if start < 0 {
+		start = 0
+	}
+	if end > len(v) {
+		end = len(v)
+	}
+	return utf8.RuneCountInString(v[:start])+utf8.RuneCountInString(text)+
+		utf8.RuneCountInString(v[end:]) > limit
+}
+
+// writePreview is no-list mode's stand-in for a visible list: it writes
+// the highlighted candidate's Insert, trailing space trimmed, over the
+// span written so far, and moves the cursor to the end of it. Accept
+// adds the space back. wrote reports whether it actually did: the
+// CharLimit check is against the full Insert, space included, not the
+// trimmed preview written here — a candidate that only fits without
+// its trailing space could never be accepted either, so it must never
+// be previewed as if it could be. On a refusal the line and the span
+// are left exactly as they were, so the next key can still try a
+// different candidate.
+func (m *Model) writePreview() bool {
+	cs := m.completion
+	cand := cs.res.Candidates[cs.index]
+	if m.spliceExceedsLimit(cs.res.Start, cs.end, cand.Insert) {
+		return false
+	}
+	preview := strings.TrimSuffix(cand.Insert, " ")
+	m.spliceValue(cs.res.Start, cs.end, preview)
+	cs.end = cs.res.Start + len(preview)
+	m.input.SetCursor(runeOffset(m.input.Value(), cs.end))
+	return true
+}
+
+// acceptCompletion splices the highlighted candidate's full Insert
+// (trailing space included) over the span, moves the cursor after it,
+// closes the list and sends one typing notice — the notice ordinary
+// typing would have sent for this keystroke, since accept changes the
+// line. It does not recompute, so the freshly inserted "@alice " does
+// not reopen the list on the same keystroke; the next keystroke
+// recomputes as usual.
+//
+// If the splice would push the line past CharLimit, the line is left
+// untouched (never silently truncated) and the list simply closes,
+// without a typing notice — no line changed, so nothing was typed.
+// It is not dismissed: a dismissal only clears once the span's start
+// moves, and backspacing inside the word to make room for the
+// candidate does not move it, so a dismiss here would leave the list
+// unreachable until the user typed a whole new trigger. Closing
+// without dismissing lets the very next keystroke recompute and reopen
+// normally; a repeated accept on an unrecoverable line simply repeats
+// the refusal.
+func (m *Model) acceptCompletion() {
+	cs := m.completion
+	cand := cs.res.Candidates[cs.index]
+	if m.spliceExceedsLimit(cs.res.Start, cs.end, cand.Insert) {
+		m.completion = nil
+		m.relayout()
+		m.push(item{kind: "event", text: m.st.err.Render(fmt.Sprintf(
+			"completion would exceed the %d-character limit", m.input.CharLimit))})
+		return
+	}
+	m.spliceValue(cs.res.Start, cs.end, cand.Insert)
+	end := cs.res.Start + len(cand.Insert)
+	m.input.SetCursor(runeOffset(m.input.Value(), end))
+	m.completion = nil
+	m.relayout()
+	if m.conn != nil {
+		m.conn.SendTyping()
+	}
 }
 
 // refresh rebuilds the viewport content from the transcript.
@@ -693,13 +1085,77 @@ func (m Model) content() string {
 	// One line, always: a long stop reason would otherwise wrap the bar
 	// and push the layout off the bottom of the screen.
 	status = xansi.Truncate(status, max(0, m.vp.Width()-2), "…")
-	help := m.st.help.Render(
-		" enter send · /who · pgup/pgdn scroll · ctrl+s spoilers · " +
-			"ctrl+t times · ctrl+c quit")
-	return m.st.status.Width(m.vp.Width()).Render(status) + "\n" +
-		m.vp.View() + "\n" +
-		m.input.View() + "\n" +
-		help
+	// Truncated the same way: a narrow terminal would otherwise wrap
+	// this into a second line and throw off every row count above it.
+	helpText := xansi.Truncate(
+		" enter send · tab complete · /who · pgup/pgdn scroll · "+
+			"ctrl+s spoilers · ctrl+t times · ctrl+c quit",
+		max(0, m.vp.Width()), "…")
+	help := m.st.help.Render(helpText)
+	rows := []string{
+		m.st.status.Width(m.vp.Width()).Render(status),
+		m.vp.View(),
+	}
+	if n := m.listRows(); n >= 1 {
+		rows = append(rows, m.completionView(n))
+	}
+	rows = append(rows, m.input.View(), help)
+	return strings.Join(rows, "\n")
+}
+
+// completionView draws the open completion list: a header row of key
+// hints (plus a "+N more" tail when candidates run past the window),
+// then n candidate rows from top. Every row is truncated to the
+// viewport's width so the screen stays exactly `height` lines.
+//
+// This is read-only: top is always valid by the time this runs because
+// every path that can change listRows or the candidate count —
+// layout's resize, cycleCompletion's own moves, recompute opening or
+// replacing the list — reclamps or resets top itself (clampWindow,
+// or a fresh top: 0). View must never mutate model state through the
+// completion pointer, so it does not clamp here too.
+func (m Model) completionView(n int) string {
+	cs := m.completion
+	w := m.vp.Width()
+	header := " tab/shift+tab next · enter accept · esc close"
+	if more := len(cs.res.Candidates) - (cs.top + n); more > 0 {
+		header += fmt.Sprintf(" · +%d more", more)
+	}
+	rows := make([]string, 0, n+1)
+	rows = append(rows, xansi.Truncate(m.st.help.Render(header), w, "…"))
+	for i := 0; i < n; i++ {
+		idx := cs.top + i
+		rows = append(rows, m.completionRow(cs.res.Candidates[idx], idx == cs.index, w))
+	}
+	return strings.Join(rows, "\n")
+}
+
+// completionRow draws one candidate: a leading space, the label (dim
+// candidates in the away style), then the detail in the help style
+// when present. Label and Detail come from the network in later
+// phases, so both go through render.Line here rather than at the
+// source. The highlighted row is wrapped in the pick style and padded
+// to w after truncation, which is what keeps it reading as a full-width
+// bar under NO_COLOR (Reverse survives where color does not).
+func (m Model) completionRow(c complete.Candidate, active bool, w int) string {
+	label := render.Line(c.Label)
+	if c.Dim {
+		label = m.st.away.Render(label)
+	}
+	row := " " + label
+	if c.Detail != "" {
+		row += "  " + m.st.help.Render(render.Line(c.Detail))
+	}
+	row = xansi.Truncate(row, w, "…")
+	if active {
+		// Stripped first: wrapping the Dim/Detail sub-styles as-is would
+		// nest pick's Reverse inside their own resets, breaking the bar
+		// into styled/unstyled/styled bands instead of one run. The
+		// highlight itself is what needs to read under NO_COLOR (ADR
+		// 0005), not the sub-styling underneath it.
+		row = m.st.pick.Width(w).Render(xansi.Strip(row))
+	}
+	return row
 }
 
 // splashView centers the current frame with the connection state and

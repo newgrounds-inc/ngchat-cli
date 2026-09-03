@@ -51,8 +51,8 @@ verifying protocol or auth changes; reserve `cmd/ngchat` for UI work.
 ## Architecture
 
 Four layers, each one package, with a channel as the only seam between
-network and UI, plus two small packages the UI draws with: `theme` and
-`splash`.
+network and UI, plus three small packages the UI draws with: `theme`,
+`splash` and `complete`.
 
 **`internal/auth` — credentials, site login, chat JWTs.** `Site` wraps
 the site's `/api/v1/auth` routes with one in-memory cookie jar per run:
@@ -173,6 +173,27 @@ sparks are hashed from the frame index so frames are deterministic
 and testable. A `Palette` of four roles (ink, hot, warm, spark) is
 mapped from the theme, so an effect never sees a theme.
 
+**`internal/complete` — the composer's tab-completion engine.** Pure,
+like `theme` and `splash`: no Bubble Tea, no lipgloss. A `Source` is a
+trigger (mention, command, emote, emoji — phases 1-4) plus the
+candidate list behind it; `Engine.Complete` tries sources in order and
+the first `Match` wins, so an earlier source's trigger cannot be
+shadowed by a later one added down the line. Offsets are byte offsets
+throughout (`Match`'s span, `Result.Start`/`End`), since Go's regexp is
+byte-native; only the UI converts to and from the input widget's rune
+positions. A list never opens with zero candidates, and `Dismiss`
+tracks one sticky-closed span keyed by `{source, start}` so `esc`
+stays quiet through further typing in the same word but clears the
+moment the trigger moves or stops matching. `Rank` is the in-house,
+dependency-free three-tier ranking (prefix, then substring, then
+subsequence, alphabetical within a tier) every source but the future
+slash-command one uses; commands keep the web's own prefix-plus-alias
+rule instead (ADR 0006), since that one was never fuzzy upstream. The
+command table, the emote list and the emoji catalog are the same kind
+of hand-reconciled drift ADR 0002 already documents for the protocol,
+with `go generate` embedding the latter two from the upstream checkout
+(phases 3-4).
+
 **`internal/ui` — Bubble Tea.** `waitEvent` pumps one `client.Event` into
 the tea loop and reschedules itself, which is how the network goroutine and
 the UI loop stay decoupled. Transcript rows keep the raw `html` and convert
@@ -184,7 +205,18 @@ the chat layout is kept current underneath; `frameMsg` ticks it at
 at `maxSplash` (4 s) regardless, on any key (consumed; `ctrl+c` still
 quits), or at once when the terminal is too small to fit the wordmark.
 A stop that leaves (signed out, access denied) quits through the
-splash like it does through the chat screen.
+splash like it does through the chat screen. `Model.completion` holds
+the open completion list (nil when closed); while it is open, `tab`,
+`shift+tab` and the up/down arrows cycle and `enter`/`esc` accept or
+dismiss without recomputing, so the candidate set cannot change out
+from under the highlighted index mid-navigation — every other key
+falls through to the input and recomputes after (left/right move the
+cursor as usual). Below 3 spare viewport rows the list does not draw
+at all (no-list mode): cycling instead previews the highlighted
+candidate directly in the line, trailing space trimmed, and accept
+adds it back. A resize reclamps the completion window (`clampWindow`)
+so a stale scroll position from before the resize cannot walk the
+list's row draw past the end of its candidates.
 
 ## Conventions
 
