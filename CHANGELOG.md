@@ -49,6 +49,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A 401 from the site while minting means the cookie was revoked or the
   password changed: the client stops and asks for `ngchat login`.
 - `esc` no longer quits; `ctrl+c` does.
+- `ngchat logout` logs the device out on the site
+  (`POST /api/v1/auth/logout`) before clearing the stored cookie, so a
+  copy kept elsewhere stops minting; it exits non-zero when the site
+  could not be reached or the OS keyring could not be checked.
+- One stored login per site: the production cookie keeps its slot and
+  any other `NGCHAT_SITE_URL` gets its own, so switching to a dev stack
+  never sends the production cookie there (ADR 0004). Both
+  `NGCHAT_SITE_URL` and `NGCHAT_WS_URL` must be `https`/`wss` off
+  loopback, the chat host must be on the site's domain, and the site
+  client never follows a redirect.
+- The credential store reads its fallback file before the OS keyring,
+  and reports a keyring that gave no answer instead of treating it as
+  empty; the file is rewritten atomically so its `0600` mode is
+  restored on every save.
+- The build requires Go 1.26.8 and CI and the release gate run
+  `govulncheck`.
 - The transcript is capped at 2000 rows.
 - One channel, `general`; the `-channel` flag is gone.
 - Release archives are built with `-trimpath` and a fixed modification
@@ -66,6 +82,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Text from the network (messages, usernames, away messages, close
+  reasons, site error text) is stripped of terminal control characters
+  and bidi overrides before it reaches the screen, and only http(s)
+  targets become OSC 8 links; a mention link hides its target only when
+  it really is that user's page.
+- The WebSocket read limit is 64 MiB instead of the library's 32 KiB, so
+  a `subscribed` envelope with a few long messages in its backfill no
+  longer drops the connection on every join.
+- The `-debug` log is recreated with mode `0600` on every run instead of
+  inheriting a wider mode, and is never written through a symlink.
 - The `kicked` frame's reason was read from the wrong field; kicks and
   idle timeouts now report the server's reason.
 - A refused subscribe after a successful authenticate is treated as

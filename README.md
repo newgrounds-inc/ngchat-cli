@@ -17,8 +17,12 @@ Grab a binary from [Releases](../../releases), or:
 go install github.com/newgrounds-inc/ngchat-cli/cmd/ngchat@latest
 ```
 
-Each release ships a `checksums.txt` next to the archives. The Linux
-and macOS tests gate every release. Windows builds are best-effort: they
+Each release ships a `checksums.txt` next to the archives. It catches a
+corrupt download, not a swapped one: it is published from the same
+release as the archives and is not signed. Builds are reproducible
+(`-trimpath`, fixed timestamps), so the way to verify an archive is to
+build the tagged commit yourself and compare. The Linux and macOS tests
+gate every release. Windows builds are best-effort: they
 are published and CI runs the tests there, but nobody exercises the TUI
 on Windows regularly, so use Windows Terminal and report what breaks.
 
@@ -33,8 +37,11 @@ ngchat -version   # print the version and exit
 
 The first run asks for your username or email, password, and a
 two-factor code if your account uses one (a TOTP recovery code works at
-the same prompt). `ngchat login` does the same on demand and `ngchat
-logout` clears it.
+the same prompt). `ngchat login` does the same on demand. `ngchat
+logout` logs this device out on the site, so the stored cookie stops
+working everywhere, then clears it locally; if the site cannot be
+reached it says so and exits non-zero, because the cookie is still
+valid there.
 
 NG Chat is a supporter-only feature. If your account is not one, ngchat
 exits with the server's notice after connecting.
@@ -43,6 +50,11 @@ Only the site's long-lived remember cookie is stored; it mints
 short-lived chat tokens for you. Your password is never written to disk.
 If the site refuses the cookie (you changed your password), ngchat exits
 and asks you to run `ngchat login` again.
+
+A login is stored per site: pointing `NGCHAT_SITE_URL` at a dev stack
+asks for a login there and never sends the production cookie to it.
+Both `NGCHAT_SITE_URL` and `NGCHAT_WS_URL` must be `https`/`wss` unless
+the host is loopback, and the chat host must be on the site's domain.
 
 ### Where the cookie lives
 

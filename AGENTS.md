@@ -67,9 +67,22 @@ with the site's message. A
 six-character code goes as `code`, anything else as `recovery_code`.
 `ServiceTokenMinter` is the `Minter` the client uses; a 401 from it is
 `ErrSignedOut`, which the client turns into a stop and the TUI into an
-exit with `run ngchat login`. `Store` persists only the `ng_remember`
-value (OS keyring, `0600` file fallback) and deletes the v0.1
-cookie-header slot on sight. See ADR 0001 and ADR 0003.
+exit with `run ngchat login`. `Logout` is `POST auth/logout` with the
+jar: it revokes the device's token rows on the site, which is what
+makes a copied cookie dead; the CLI runs it before clearing local
+copies and exits non-zero if the site did not answer. `Store` persists
+only the `ng_remember` value (OS keyring, `0600` file fallback, atomic
+rewrites so an existing file's mode is repaired), under one key per
+site (`Site.CredentialKey`, ADR 0004), and deletes the v0.1
+cookie-header slot on sight. `Load` reads the file before the
+keyring, so a value saved to the file while the keyring was locked wins
+over whatever the keyring still holds once it opens; `Load` and `Delete` report a
+keyring that gave no answer as `ErrKeyringUnavailable` rather than
+"not found" or success, so nothing infers absence from it; the chat
+path treats it as a fresh login, logout as a failure. `NewSite` refuses plaintext off loopback and never follows a
+redirect; `Site.CheckChatURL` requires wss and the site's domain for the
+chat URL before anything is minted. See ADR 0001, 0003
+and 0004.
 
 **`internal/protocol` — hand-ported wire types.** The source of truth is
 the TypeScript Zod schemas in the private `ngchat` repo
@@ -117,12 +130,24 @@ Three behaviors are load-bearing:
   reconnects) or a rejected `reauthenticate`.
 
 Heartbeat pings every 5s; the server drops sockets silent for 15s, and the
-20s read timeout doubles as the dead-link watchdog.
+20s read timeout doubles as the dead-link watchdog. The read limit is
+64 MiB (`maxFrameBytes`, derived in its comment from every repeated
+field of `subscribed` and a 1000-row roster assumption, since the server
+caps neither the roster nor away-message length): coder/websocket's
+32 KiB default is smaller than a legal `subscribed` with a few
+5000-character messages in it.
 
-**`internal/render` — HTML to ANSI.** The server ships finished HTML for
-each message, so this translates tags rather than reimplementing the site's
-formatter; unknown tags degrade to their text content. Emote spans become
-`:code:` because the classes reference CSS sprites, not image URLs.
+**`internal/render` — HTML to ANSI, and the terminal boundary.** The
+server ships finished HTML for each message, so this translates tags
+rather than reimplementing the site's formatter; unknown tags degrade to
+their text content. Emote spans become `:code:` because the classes
+reference CSS sprites, not image URLs. The server escapes for a browser,
+not a terminal, so `Plain`/`Line` strip C0/C1 controls and bidi
+overrides from every network string that reaches the screen: `Text`
+applies it to text and attributes (entities are decoded by then, so
+`&#27;` is a live ESC), hrefs must be http(s) to become OSC 8 links, and
+the UI, `FailError.Message`, and `cmd/smoke` call it on usernames, close
+reasons and site messages that never pass through `Text`.
 
 **`internal/ui` — Bubble Tea.** `waitEvent` pumps one `client.Event` into
 the tea loop and reschedules itself, which is how the network goroutine and

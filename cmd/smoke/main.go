@@ -42,7 +42,7 @@ func main() {
 		fmt.Println("credential: SMOKE_NG_COOKIE from the environment " +
 			"(unset it to use the stored login)")
 	} else {
-		remember, err := (auth.Store{}).Load(auth.RememberKey)
+		remember, err := (auth.Store{}).Load(site.CredentialKey())
 		if err != nil {
 			fmt.Println("no SMOKE_NG_COOKIE and no stored login:", err)
 			os.Exit(2)
@@ -63,6 +63,10 @@ func main() {
 		time.Duration(seconds)*time.Second)
 	defer cancel()
 
+	if err := site.CheckChatURL(os.Getenv("NGCHAT_WS_URL")); err != nil {
+		fmt.Println("NGCHAT_WS_URL:", err)
+		os.Exit(2)
+	}
 	c := client.New(client.Config{
 		WSURL:   os.Getenv("NGCHAT_WS_URL"),
 		Channel: "general",
@@ -76,7 +80,7 @@ func main() {
 		switch msg := e.Msg.(type) {
 		case protocol.Authenticated:
 			fmt.Printf("authenticated as %s (userID %d, motd %q)\n",
-				msg.Username, msg.UserID, msg.MOTDText())
+				render.Line(msg.Username), msg.UserID, msg.MOTDText())
 		case protocol.Subscribed:
 			fmt.Printf("subscribed channelID=%d buffer=%d users=%d notices=%d gap=%v\n",
 				msg.ChannelID, len(msg.MessageBuffer), len(msg.UserList),
@@ -91,27 +95,27 @@ func main() {
 			}
 		case protocol.Message:
 			fmt.Printf("%s <%s> spoiler=%v id=%v | %s\n",
-				msg.Name, msg.Username, msg.IsSpoiler, deref(msg.ID),
+				msg.Name, render.Line(msg.Username), msg.IsSpoiler, deref(msg.ID),
 				truncate(render.Text(msg.Message), 80))
 		case protocol.TypingEvent:
 			fmt.Printf("typing channelID=%d userID=%d username=%q\n",
 				msg.ChannelID, msg.UserID, msg.Username)
 		case protocol.UserJoined:
-			fmt.Printf("userJoined %s\n", msg.Username)
+			fmt.Printf("userJoined %s\n", render.Line(msg.Username))
 		case protocol.UserLeft:
-			fmt.Printf("userLeft %s\n", msg.Username)
+			fmt.Printf("userLeft %s\n", render.Line(msg.Username))
 		case protocol.UserUpdated:
 			fmt.Printf("userUpdated %s mod=%v away=%v\n",
-				msg.Username, msg.IsChatMod, msg.IsAway)
+				render.Line(msg.Username), msg.IsChatMod, msg.IsAway)
 		case protocol.Revalidated:
 			fmt.Printf("revalidated admin=%v chatMod=%v siteMod=%v\n",
 				msg.IsAdmin, msg.IsChatMod, msg.IsSiteMod)
 		case client.RenewalFailed:
-			fmt.Printf("renewal failed: %v\n", msg.Err)
+			fmt.Printf("renewal failed: %s\n", render.Line(msg.Err.Error()))
 		case protocol.Unknown:
 			fmt.Printf("UNKNOWN/undecodable frame: name=%q\n", msg.Name)
 		case nil:
-			fmt.Printf("state=%v err=%v\n", e.State, e.Err)
+			fmt.Printf("state=%v err=%s\n", e.State, render.Line(fmt.Sprint(e.Err)))
 			var denied *client.AccessDenied
 			if errors.As(e.Err, &denied) {
 				fmt.Printf("access denied: %s\n", render.Text(denied.Message))

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
+	"github.com/newgrounds-inc/ngchat-cli/internal/render"
 	"github.com/newgrounds-inc/ngchat-cli/internal/ui"
 )
 
@@ -75,20 +77,20 @@ func main() {
 		}
 		return
 	case "logout":
-		if err := store.Delete(auth.RememberKey); err != nil {
-			fatal(err)
-		}
-		if _, err := store.Migrate(); err != nil {
-			fatal(err)
-		}
-		fmt.Println("credentials cleared")
-		return
+		os.Exit(logout(ctx, store, site, os.Stdout, os.Stderr))
 	case "":
 	default:
 		usage()
 		os.Exit(2)
 	}
 
+	// The chat URL matters only on the chat path, and is checked before
+	// any mint because the token minted from the site's cookie goes to
+	// it as the first frame. A stale NGCHAT_WS_URL must not block login
+	// or logout.
+	if err := site.CheckChatURL(wsURL); err != nil {
+		fatal(fmt.Errorf("NGCHAT_WS_URL: %w", err))
+	}
 	if err := prepareSite(ctx, store, site); err != nil {
 		exitLogin(ctx, err)
 	}
@@ -98,6 +100,84 @@ func main() {
 	}); err != nil {
 		fatal(err)
 	}
+}
+
+// credentialStore and revoker are what logout needs from auth.Store and
+// *auth.Site, narrowed so the outcome matrix can be tested with fakes.
+type credentialStore interface {
+	Load(key string) (string, error)
+	Delete(key string) error
+	Migrate() (bool, error)
+}
+
+type revoker interface {
+	CredentialKey() string
+	SetRemember(value string)
+	Logout(ctx context.Context) error
+}
+
+// logout revokes this device's remember token on the site, then clears
+// every local copy, and returns the exit code. Local cleanup always
+// runs, whatever the earlier steps did. The exit is zero only when the
+// site revoked the cookie (or there was provably none to revoke) and
+// both local backends are confirmed clear; the one downgrade is a
+// keyring that could not be checked (ErrKeyringUnavailable) after the
+// site has revoked the cookie, since whatever it may hold is dead then.
+// Without that proof, an unreadable keyring may hold a live credential
+// and the command says so and fails.
+func logout(ctx context.Context, store credentialStore, site revoker,
+	out, errOut io.Writer) int {
+	key := site.CredentialKey()
+	remember, loadErr := store.Load(key)
+	stored := loadErr == nil
+	revoked := false
+	var revokeErr error
+	if stored {
+		site.SetRemember(remember)
+		revokeErr = site.Logout(ctx)
+		revoked = revokeErr == nil
+	}
+
+	clearErr := store.Delete(key)
+	if _, err := store.Migrate(); err != nil {
+		clearErr = errors.Join(clearErr, err)
+	}
+
+	code := 0
+	if loadErr != nil && !errors.Is(loadErr, auth.ErrNotFound) {
+		code = 1
+		fmt.Fprintln(errOut, "ngchat: could not read the stored credential, "+
+			"so nothing was revoked on the site:", loadErr)
+	}
+	if revokeErr != nil {
+		code = 1
+		fmt.Fprintln(errOut, "ngchat: the site did not revoke the cookie:",
+			revokeErr)
+		fmt.Fprintln(errOut, "ngchat: it stays valid there until you log "+
+			"out again online or change your password")
+	}
+	switch {
+	case clearErr == nil:
+	case errors.Is(clearErr, auth.ErrKeyringUnavailable) && revoked:
+		fmt.Fprintln(errOut, "ngchat:", clearErr)
+	case errors.Is(clearErr, auth.ErrKeyringUnavailable):
+		code = 1
+		fmt.Fprintln(errOut, "ngchat:", clearErr)
+		fmt.Fprintln(errOut, "ngchat: a credential it may hold was not "+
+			"revoked; unlock it and run `ngchat logout` again")
+	default:
+		code = 1
+		fmt.Fprintln(errOut, "ngchat: local credentials not fully cleared:",
+			clearErr)
+	}
+	switch {
+	case code != 0:
+	case !stored:
+		fmt.Fprintln(out, "no stored credentials")
+	default:
+		fmt.Fprintln(out, "logged out")
+	}
+	return code
 }
 
 // chatOptions carries what runChat needs from the flags and environment.
@@ -191,14 +271,29 @@ func debugLogPath() (string, error) {
 	return filepath.Join(base, "ngchat", "debug.log"), nil
 }
 
-// openDebugLog truncates and opens the log at path, creating its
+// openDebugLog replaces the log at path with a fresh one, creating its
 // directory. Mode 0600: frames are redacted but chat text is still the
-// user's private conversation.
+// user's private conversation. The old file is removed rather than
+// truncated because OpenFile applies the mode only to a file it
+// creates, so a copy left with a wider mode would keep it; anything at
+// the path that is not a regular file (a symlink, a FIFO) is refused
+// rather than written through. Windows has no mode bits; the per-user
+// state directory's ACL is the boundary there.
 func openDebugLog(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("debug log: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("debug log: %s is not a regular file", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, fmt.Errorf("debug log: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("debug log: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("debug log: %w", err)
 	}
@@ -239,8 +334,13 @@ func prepareSite(ctx context.Context, store auth.Store, site *auth.Site) error {
 		fmt.Fprintln(os.Stderr, "ngchat: the cookie stored by an older "+
 			"version was removed; please log in once")
 	}
-	remember, err := store.Load(auth.RememberKey)
-	if errors.Is(err, auth.ErrNotFound) {
+	remember, err := store.Load(site.CredentialKey())
+	if errors.Is(err, auth.ErrKeyringUnavailable) {
+		// Whatever the keyring holds cannot be used this run; a fresh
+		// login lands in the file, which Load reads first from then on.
+		fmt.Fprintln(os.Stderr, "ngchat:", err, "; logging in again")
+	}
+	if errors.Is(err, auth.ErrNotFound) || errors.Is(err, auth.ErrKeyringUnavailable) {
 		// The login leaves the jar authenticated, so the first mint
 		// needs no further setup.
 		_, err := login(ctx, store, site)
@@ -272,10 +372,10 @@ func login(ctx context.Context, store auth.Store, site *auth.Site) (auth.Session
 	if err != nil {
 		return auth.Session{}, err
 	}
-	if err := store.Save(auth.RememberKey, sess.Remember); err != nil {
+	if err := store.Save(site.CredentialKey(), sess.Remember); err != nil {
 		return auth.Session{}, fmt.Errorf("storing credential: %w", err)
 	}
-	fmt.Printf("logged in as %s\n", sess.User.Username)
+	fmt.Printf("logged in as %s\n", render.Line(sess.User.Username))
 	return sess, nil
 }
 
@@ -358,7 +458,7 @@ func usage() {
 usage:
   ngchat [flags]              join #general (prompts for login the first time)
   ngchat login                log in and store the remember cookie
-  ngchat logout               clear stored credentials
+  ngchat logout               log this device out on the site and clear the cookie
 
 flags:
 `)
@@ -369,6 +469,11 @@ environment:
   NGCHAT_SITE_URL         site base URL (default %s)
   NGCHAT_ROUTING_COOKIE   extra cookie for the dev/staging proxy
   NGCHAT_NG_COOKIE        NG cookie header (bypasses the stored login)
+
+Both URLs must be wss/https unless the host is loopback, and the chat
+host must be on the site's domain. A login is stored per site, so
+switching NGCHAT_SITE_URL never sends one site's cookie to another; log
+in once per site.
 `, defaultWSURL, defaultSiteURL)
 }
 
