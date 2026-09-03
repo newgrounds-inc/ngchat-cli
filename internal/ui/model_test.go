@@ -1577,3 +1577,154 @@ func TestMentionCompletionSelfComparedSanitized(t *testing.T) {
 		t.Fatalf("candidates = %v, want %v (self must be excluded)", got, want)
 	}
 }
+
+// TestCommandCompletionHiddenForPlainUser: nothing in the AccessAll
+// tier starts with "/k" (that prefix belongs to the mod-only /kick),
+// so a regular user typing "/k" should see no list at all.
+func TestCommandCompletionHiddenForPlainUser(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{}})
+
+	m = typeText(m, "/k")
+	if m.completion != nil {
+		t.Fatalf("completion for a plain user typing /k = %+v, want none open", m.completion)
+	}
+}
+
+// TestCommandCompletionAuthenticatedFlagsNotSwapped guards against
+// IsAdmin and IsChatMod being assigned to the wrong field in
+// handleEvent's Authenticated case: an admin-only command (/play) must
+// show for IsAdmin and stay hidden for IsChatMod alone, which a
+// swapped assignment would get backwards (mods do not clear an
+// admin-only gate).
+func TestCommandCompletionAuthenticatedFlagsNotSwapped(t *testing.T) {
+	admin := newModel()
+	admin = sized(admin, 80, 24)
+	admin.handleEvent(client.Event{Msg: protocol.Authenticated{IsAdmin: true}})
+	admin = typeText(admin, "/pl")
+	if got, want := candidateLabels(admin), []string{"/play"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates for /pl as IsAdmin = %v, want %v", got, want)
+	}
+
+	mod := newModel()
+	mod = sized(mod, 80, 24)
+	mod.handleEvent(client.Event{Msg: protocol.Authenticated{IsChatMod: true}})
+	mod = typeText(mod, "/pl")
+	if mod.completion != nil {
+		t.Fatalf("completion for /pl as IsChatMod = %+v, want none (admin-only)", mod.completion)
+	}
+}
+
+// TestCommandCompletionAcceptInsertsCanonicalNameAndSends: a mod's "/k"
+// completes to /kick alone (its only match), tab accepts the single
+// candidate outright with the cursor at the end of the inserted text,
+// and enter sends the canonical name trimmed, the same as any other
+// line.
+func TestCommandCompletionAcceptInsertsCanonicalNameAndSends(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	conn := &fakeConn{}
+	m.conn = conn
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{IsChatMod: true}})
+
+	m = typeText(m, "/k")
+	if got, want := candidateLabels(m), []string{"/kick (k)"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates for /k as a mod = %v, want %v", got, want)
+	}
+	m = keyTab(m)
+	if m.completion != nil {
+		t.Fatal("tab on a single candidate should accept outright")
+	}
+	if got, want := m.input.Value(), "/kick "; got != want {
+		t.Errorf("value = %q, want %q", got, want)
+	}
+	if got, want := m.input.Position(), len([]rune("/kick ")); got != want {
+		t.Errorf("cursor position = %d, want %d (end of the inserted text)", got, want)
+	}
+
+	m = keyEnterC(m)
+	if got, want := conn.sent, []string{"/kick"}; !slices.Equal(got, want) {
+		t.Errorf("sent = %v, want %v (trimmed, like every other send)", got, want)
+	}
+}
+
+// TestCommandCompletionRankFollowsRevalidated: the admin-only /play is
+// hidden from a plain user, appears once Revalidated promotes to
+// admin, and is hidden again once a following Revalidated demotes back
+// -- the rank is read fresh from the model on every query, not cached
+// from Authenticated.
+func TestCommandCompletionRankFollowsRevalidated(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{}})
+
+	m = typeText(m, "/pl")
+	if m.completion != nil {
+		t.Fatalf("plain user's /pl completion = %+v, want none (admin-only /play hidden)",
+			m.completion)
+	}
+
+	m.handleEvent(client.Event{Msg: protocol.Revalidated{IsAdmin: true}})
+	m.input.Reset()
+	m.recompute()
+	m = typeText(m, "/pl")
+	if got, want := candidateLabels(m), []string{"/play"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates for /pl after Revalidated{IsAdmin: true} = %v, want %v", got, want)
+	}
+
+	m.handleEvent(client.Event{Msg: protocol.Revalidated{}})
+	m.input.Reset()
+	m.recompute()
+	m = typeText(m, "/pl")
+	if m.completion != nil {
+		t.Fatalf("completion after Revalidated{} demotion = %+v, want none", m.completion)
+	}
+}
+
+// TestCommandCompletionWhoAcceptedIsHandledLocally: /who completes and
+// accepts like any other command, but sending it never reaches the
+// network -- enter still runs the local roster listing, exactly as it
+// does when /who is typed by hand.
+func TestCommandCompletionWhoAcceptedIsHandledLocally(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	conn := &fakeConn{}
+	m.conn = conn
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{Username: "me"}})
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 1, Username: "alice"},
+	}}})
+
+	m = typeText(m, "/who")
+	if got, want := candidateLabels(m), []string{"/who"}; !slices.Equal(got, want) {
+		t.Fatalf("candidates for /who = %v, want %v", got, want)
+	}
+	m = keyTab(m)
+	if got, want := m.input.Value(), "/who "; got != want {
+		t.Fatalf("value after accept = %q, want %q", got, want)
+	}
+
+	before := len(m.items)
+	m = keyEnterC(m)
+	if len(conn.sent) != 0 {
+		t.Errorf("sent = %v, want nothing: /who is handled locally", conn.sent)
+	}
+	if len(m.items) != before+1 {
+		t.Fatalf("items after /who = %d, want %d (one roster row)", len(m.items), before+1)
+	}
+}
+
+// TestCommandCompletionMidLineNeverTriggers: the command trigger is the
+// whole line, so a "/" that is not the first character never opens the
+// list, matching complete.Commands.Match's contract directly.
+func TestCommandCompletionMidLineNeverTriggers(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{IsChatMod: true}})
+
+	m = typeText(m, "hi /k")
+	if m.completion != nil {
+		t.Fatalf("mid-line \"hi /k\" completion = %+v, want none", m.completion)
+	}
+}

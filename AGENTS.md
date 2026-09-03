@@ -92,7 +92,10 @@ the TypeScript Zod schemas in the private `ngchat` repo
 they must match field-for-field), while `Decode` in `server.go` is
 **tolerant** — unknown names and undecodable payloads become `Unknown`,
 never an error, so old binaries survive protocol additions. Protocol
-changes upstream require a manual sync here (ADR 0002).
+changes upstream require a manual sync here (ADR 0002). The
+slash-command table in `internal/complete/commands.go` is reconciled
+by hand against upstream `slash_commands.ts` the same way, and its
+comment names the upstream commit.
 
 **`internal/client` — the session state machine.** `Run` loops sessions
 with exponential backoff; `session` does mint → dial → `authenticate` →
@@ -186,16 +189,23 @@ tracks one sticky-closed span keyed by `{source, start}` so `esc`
 stays quiet through further typing in the same word but clears the
 moment the trigger moves or stops matching. `Rank` is the in-house,
 dependency-free three-tier ranking (prefix, then substring, then
-subsequence, alphabetical within a tier) every source but the future
-slash-command one uses; commands keep the web's own prefix-plus-alias
-rule instead (ADR 0006), since that one was never fuzzy upstream. The
-command table, the emote list and the emoji catalog are the same kind
-of hand-reconciled drift ADR 0002 already documents for the protocol,
-with `go generate` embedding the latter two from the upstream checkout
-(phases 3-4). `Mentions` (phase 1) is the first source: it ranks the
-live roster rather than a fixed list, reading `Users`/`Self` fresh on
-every `Candidates` call so a join, a leave or an away change between
-keystrokes needs no change notification into this package.
+subsequence, alphabetical within a tier) every source but `Commands`
+uses; commands keep the web's own prefix-plus-alias rule instead (ADR
+0006), since that one was never fuzzy upstream. The command table, the
+emote list and the emoji catalog are the same kind of hand-reconciled
+drift ADR 0002 already documents for the protocol, with `go generate`
+embedding the latter two from the upstream checkout (phases 3-4).
+`Mentions` (phase 1) is the first source: it ranks the live roster
+rather than a fixed list, reading `Users`/`Self` fresh on every
+`Candidates` call so a join, a leave or an away change between
+keystrokes needs no change notification into this package. `Commands`
+(phase 2) triggers on the whole line rather than a trailing word (`/`
+only opens the list as the first character typed), and filters
+`CommandTable` to the viewer's rank, read fresh from `Viewer` on every
+query so a `revalidated` rank change takes effect without a hook into
+this package either; that filter is cosmetic, as upstream documents —
+the server is the only enforcement point, and hiding a command here
+only keeps the list from advertising a dead end.
 
 **`internal/ui` — Bubble Tea.** `waitEvent` pumps one `client.Event` into
 the tea loop and reschedules itself, which is how the network goroutine and

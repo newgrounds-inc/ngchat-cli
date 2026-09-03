@@ -191,8 +191,12 @@ type Model struct {
 	stopErr        error
 	retryErr       error // why the last session ended, while reconnecting
 	self           string
-	motd           string // server HTML from Authenticated, shown after each backfill
-	typing         map[string]typingState
+	// isAdmin and isChatMod gate the command completion list; both are
+	// set from Authenticated and kept current by Revalidated, since a
+	// renewal's flags supersede the ones the session started with.
+	isAdmin, isChatMod bool
+	motd               string // server HTML from Authenticated, shown after each backfill
+	typing             map[string]typingState
 	// users is the roster keyed by user ID, seeded by Subscribed and
 	// patched by userJoined, userLeft, userUpdated and away.
 	users map[int]protocol.ChannelUser
@@ -476,6 +480,8 @@ func (m *Model) handleEvent(e client.Event) {
 	switch msg := e.Msg.(type) {
 	case protocol.Authenticated:
 		m.self = msg.Username
+		m.isAdmin = msg.IsAdmin
+		m.isChatMod = msg.IsChatMod
 		m.motd = msg.MOTDText()
 	case client.BackfillDone:
 		// Below the history so it is the first thing read on join, like
@@ -522,9 +528,12 @@ func (m *Model) handleEvent(e client.Event) {
 		m.pushEvent(m.awayText(msg), msg.ServerTime)
 	case protocol.Revalidated:
 		// The socket renewed its token in place; the flags on this
-		// message now describe self. Nothing in the transcript depends on
-		// them yet, so the only visible effect is that no reconnect
-		// divider appears.
+		// message now describe self. They matter for the command
+		// completion list, which hides commands above the viewer's
+		// rank: a mod promoted or demoted mid-session sees the change
+		// on the next "/" without reconnecting.
+		m.isAdmin = msg.IsAdmin
+		m.isChatMod = msg.IsChatMod
 	case client.RenewalFailed:
 		m.pushEvent(m.st.event.Render(
 			"token renewal failed ("+render.Line(msg.Err.Error())+
@@ -834,7 +843,18 @@ func (m *Model) completionSources() []complete.Source {
 	if m.sources != nil {
 		return m.sources
 	}
-	return []complete.Source{complete.Mentions{Users: m.rosterUsers, Self: m.selfName}}
+	return []complete.Source{
+		complete.Mentions{Users: m.rosterUsers, Self: m.selfName},
+		complete.Commands{Viewer: m.viewerAccess},
+	}
+}
+
+// viewerAccess reports self's command rank from the privilege flags
+// Authenticated and Revalidated keep current, for complete.Commands to
+// filter against. It is a method (not a captured value) so each
+// completionSources call reads whatever Revalidated last set.
+func (m *Model) viewerAccess() complete.Access {
+	return complete.AccessFor(m.isAdmin, m.isChatMod)
 }
 
 // rosterUsers adapts the roster to what complete.Mentions needs, read
