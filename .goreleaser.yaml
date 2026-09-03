@@ -60,6 +60,9 @@ changelog:
       order: 999
 
 release:
+  # A -rc/-beta tag is a release candidate for the manual test pass, so
+  # it must not show as the latest release or be picked up by go install.
+  prerelease: auto
   footer: |
     The full history is in
     [CHANGELOG.md](https://github.com/newgrounds-inc/ngchat-cli/blob/main/CHANGELOG.md).
