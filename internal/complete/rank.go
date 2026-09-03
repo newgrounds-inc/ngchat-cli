@@ -33,11 +33,16 @@ func Rank[T any](term string, items []T, key func(T) string) []T {
 		exact string
 	}
 	lowerTerm := strings.ToLower(term)
+	// term is decoded to runes once here rather than inside
+	// isSubsequence per item. The remaining per-keystroke cost is
+	// strings.ToLower over every key below, which a fold table would
+	// remove if it ever matters.
+	termRunes := []rune(lowerTerm)
 	scoredItems := make([]scored, 0, len(items))
 	for _, it := range items {
 		exactKey := key(it)
 		lowerKey := strings.ToLower(exactKey)
-		tier, ok := matchTier(lowerKey, lowerTerm)
+		tier, ok := matchTier(lowerKey, lowerTerm, termRunes)
 		if !ok {
 			continue
 		}
@@ -62,34 +67,35 @@ func Rank[T any](term string, items []T, key func(T) string) []T {
 
 // matchTier reports how lowerKey matches lowerTerm: 0 for a prefix
 // match, 1 for a substring match, 2 for a subsequence match, ok=false
-// for no match at all. Both arguments must already be lowercased.
-func matchTier(lowerKey, lowerTerm string) (tier int, ok bool) {
+// for no match at all. lowerKey and lowerTerm must already be
+// lowercased; termRunes is lowerTerm decoded once by the caller so
+// isSubsequence never repeats that conversion per item.
+func matchTier(lowerKey, lowerTerm string, termRunes []rune) (tier int, ok bool) {
 	switch {
 	case strings.HasPrefix(lowerKey, lowerTerm):
 		return 0, true
 	case strings.Contains(lowerKey, lowerTerm):
 		return 1, true
-	case isSubsequence(lowerTerm, lowerKey):
+	case isSubsequence(termRunes, lowerKey):
 		return 2, true
 	default:
 		return 0, false
 	}
 }
 
-// isSubsequence reports whether every rune of term appears in s, in
-// order, not necessarily adjacent. An empty term is trivially true,
-// though matchTier never reaches this tier for one: HasPrefix already
-// matches an empty term at tier 0.
-func isSubsequence(term, s string) bool {
-	runes := []rune(term)
+// isSubsequence reports whether every rune of termRunes appears in s,
+// in order, not necessarily adjacent. An empty termRunes is trivially
+// true, though matchTier never reaches this tier for one: HasPrefix
+// already matches an empty term at tier 0.
+func isSubsequence(termRunes []rune, s string) bool {
 	i := 0
 	for _, r := range s {
-		if i == len(runes) {
+		if i == len(termRunes) {
 			break
 		}
-		if r == runes[i] {
+		if r == termRunes[i] {
 			i++
 		}
 	}
-	return i == len(runes)
+	return i == len(termRunes)
 }

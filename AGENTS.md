@@ -12,6 +12,7 @@ go test ./...                    # unit tests (no network, no keyring)
 go test -run TestDecodeTolerance ./internal/protocol   # a single test
 go test -cover ./internal/...    # coverage per package
 goreleaser release --snapshot --clean     # local cross-platform build check
+NGCHAT_UPSTREAM=~/dev/ngchat go generate ./internal/complete   # regen embedded lists
 ```
 
 Live verification uses the headless harness in `cmd/smoke` — it runs the
@@ -95,7 +96,13 @@ never an error, so old binaries survive protocol additions. Protocol
 changes upstream require a manual sync here (ADR 0002). The
 slash-command table in `internal/complete/commands.go` is reconciled
 by hand against upstream `slash_commands.ts` the same way, and its
-comment names the upstream commit.
+comment names the upstream commit. The emote shortcode list in
+`internal/complete/emotes_gen.go` extends the same drift contract, but
+generated rather than hand-typed: `go generate ./internal/complete`
+(`NGCHAT_UPSTREAM`, no default — see Commands) reads upstream's
+`emoticons.json`/`emoticons-small.json` and writes the header naming
+the upstream commit; regenerate it whenever upstream's emoticon lists
+change.
 
 **`internal/client` — the session state machine.** `Run` loops sessions
 with exponential backoff; `session` does mint → dial → `authenticate` →
@@ -205,7 +212,16 @@ only opens the list as the first character typed), and filters
 query so a `revalidated` rank change takes effect without a hook into
 this package either; that filter is cosmetic, as upstream documents —
 the server is the only enforcement point, and hiding a command here
-only keeps the list from advertising a dead end.
+only keeps the list from advertising a dead end. `Emotes` (phase 3)
+has no fields, unlike `Mentions` and `Commands`: `emoteCodes` is
+static between builds, so there is nothing to read fresh. Its trigger
+needs whitespace or the line start immediately before `ng`/`tf` (RE2
+has no lookbehind, so a leading `(?:^|\s)` stands in for upstream's
+`(?<= |^)`), which is what keeps `@ngfoo` a mention rather than an
+emote. A `*` typed in the term is stripped before ranking rather than
+given wildcard semantics of its own: the shared `Rank`'s subsequence
+tier already treats the gap as "anything", which is the same
+approximation upstream's fuzzysort gives it.
 
 **`internal/ui` — Bubble Tea.** `waitEvent` pumps one `client.Event` into
 the tea loop and reschedules itself, which is how the network goroutine and

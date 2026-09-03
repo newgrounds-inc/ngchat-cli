@@ -1,3 +1,5 @@
+//go:generate go run ./gen
+
 // Package complete is the pure completion engine behind the composer's
 // tab-triggered lists (mentions, commands, emotes, emoji). It knows
 // nothing about Bubble Tea, lipgloss or the theme: given a line and the

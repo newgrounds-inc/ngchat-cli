@@ -1728,3 +1728,69 @@ func TestCommandCompletionMidLineNeverTriggers(t *testing.T) {
 		t.Fatalf("mid-line \"hi /k\" completion = %+v, want none", m.completion)
 	}
 }
+
+// TestEmoteCompletionOpensFromEmbeddedList is the phase 3 wiring test:
+// with no sources override, completionSources puts complete.Emotes
+// first, so typing an ordinary "ngaho" token opens straight from the
+// embedded shortcode list with the alphabetically-first prefix match
+// highlighted, and enter splices it in with the trailing space.
+func TestEmoteCompletionOpensFromEmbeddedList(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.conn = &fakeConn{}
+
+	m = typeText(m, "ngaho")
+	if m.completion == nil || len(m.completion.res.Candidates) == 0 {
+		t.Fatalf("completion after \"ngaho\" = %+v, want an open list", m.completion)
+	}
+	if got := m.completion.res.Source; got != "emote" {
+		t.Fatalf("completion source = %q, want \"emote\"", got)
+	}
+	if got := m.completion.res.Candidates[0].Label; got != "ngaHoldup" {
+		t.Fatalf("first candidate = %q, want \"ngaHoldup\"", got)
+	}
+
+	m = keyEnterC(m)
+	if m.completion != nil {
+		t.Error("enter should close the completion")
+	}
+	if got, want := m.input.Value(), "ngaHoldup "; got != want {
+		t.Errorf("value after accept = %q, want %q", got, want)
+	}
+}
+
+// TestEmoteSourceNeverShadowsMention checks the order completionSources
+// wires the sources in: Emotes is tried first, but its trigger needs
+// whitespace (or the line start) immediately before the "ng"/"tf"
+// token, so "@ngaho" never reaches it — the mention source owns
+// anything after "@" regardless of what it looks like. With no user
+// named "ngaho" on the roster the mention list has nothing to offer
+// and stays closed; once such a user joins, the same text opens the
+// mention list, never the emote one.
+func TestEmoteSourceNeverShadowsMention(t *testing.T) {
+	m := newModel()
+	m = sized(m, 80, 24)
+	m.conn = &fakeConn{}
+	m.handleEvent(client.Event{Msg: protocol.Authenticated{Username: "me"}})
+	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
+		{UserID: 1, Username: "alice"},
+	}}})
+
+	m = typeText(m, "@ngaho")
+	if m.completion != nil {
+		t.Fatalf("completion for \"@ngaho\" with no such user = %+v, want none open",
+			m.completion)
+	}
+
+	for range "@ngaho" {
+		m = press(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	}
+	m.handleEvent(joined(2, "ngaho", false))
+	m = typeText(m, "@ngaho")
+	if m.completion == nil {
+		t.Fatal("completion for \"@ngaho\" after ngaho joined = nil, want the mention list open")
+	}
+	if got := m.completion.res.Source; got != "mention" {
+		t.Errorf("completion source = %q, want \"mention\" (never emote)", got)
+	}
+}
