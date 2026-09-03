@@ -14,29 +14,29 @@ this extends), `newgrounds-inc/ngchat`
 
 ### Phase 0: engine and list
 
-- [ ] `internal/complete`: `Source` interface, `Complete(line,
+- [x] `internal/complete`: `Source` interface, `Complete(line,
       cursor, sources)` returning the trigger span and up to 10
       candidates, three-tier ranking, sticky dismiss keyed by
       `{source, spanStart}`.
-- [ ] Table tests: trigger detection (port `regexes.test.ts`), span
+- [x] Table tests: trigger detection (port `regexes.test.ts`), span
       bounds at the cursor and mid-line, ranking order, cap, dismiss
       survives further typing in the same span and clears when the
       span changes.
-- [ ] UI: `completion` state on `Model`; keys `tab`/`shift+tab`/
+- [x] UI: `completion` state on `Model`; keys `tab`/`shift+tab`/
       `down`/`up` cycle with wrap, `enter` accepts, `esc` dismisses;
       any other key falls through to the input and recomputes.
-- [ ] UI: list drawn above the input, header row with key hints, up
+- [x] UI: list drawn above the input, header row with key hints, up
       to 5 candidate rows, the window scrolls with the highlight,
       `+N more` tail; `layout` reserves the rows from the viewport.
-- [ ] UI: no-list mode when the viewport cannot give 3 rows: cycling
+- [x] UI: no-list mode when the viewport cannot give 3 rows: cycling
       writes the highlighted candidate into the span as a preview,
       accept adds the trailing space.
-- [ ] UI: navigation keys send no typing notice; accept does.
-- [ ] Help line gains `tab complete`.
-- [ ] UI tests: open/cycle/accept/dismiss by key, viewport height
+- [x] UI: navigation keys send no typing notice; accept does.
+- [x] Help line gains `tab complete`.
+- [x] UI tests: open/cycle/accept/dismiss by key, viewport height
       with the list open and closed, no typing notice on `tab`, the
       no-list preview path, ANSI-stripped row text.
-- [ ] ADR 0006, `CONTEXT.md` vocabulary (trigger, span, candidate,
+- [x] ADR 0006, `CONTEXT.md` vocabulary (trigger, span, candidate,
       source, dismiss), `AGENTS.md` architecture paragraph.
 
 ### Phase 1: mentions

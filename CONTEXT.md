@@ -103,3 +103,36 @@ How an art is drawn in over time: a pure function of elapsed time
 that returns one frame. Today *laser etch*, a beam that sweeps left to
 right and ignites the pixels it passes.
 
+**Trigger**:
+The character sequence that opens a completion list: `@` for mentions,
+`/` for commands, the `ng`/`tf` emote prefixes, `:` for emoji. Matched
+against the line up to the cursor only, never past it.
+_Avoid_: autocomplete
+
+**Span**:
+The run of the line a completion will replace on accept: from the
+trigger to the cursor. Byte offsets throughout, since Go's regexp is
+byte-native and only the UI ever converts to the input widget's rune
+positions.
+_Avoid_: word, selection
+
+**Candidate**:
+One row a completion list offers: an `Insert` (the full replacement,
+trailing space included where the wire format wants one), a `Label`
+and an optional dimmed `Detail`.
+_Avoid_: suggestion, option
+
+**Source**:
+One trigger and the candidate list behind it (mentions, commands,
+emotes, emoji are the four phases). Stateless between calls: the
+engine re-queries a source on every keystroke rather than caching,
+since what it reads (the roster, the privilege flags) can change
+underneath it.
+
+**Dismiss**:
+Closing a completion list with `esc`. Sticky per span
+(`{source, start}`): typing further into the same span stays quiet
+until the trigger's start moves or a keystroke matches something else,
+so a list is never reopened by the same word it was just closed on.
+_Avoid_: history (a dismissal is not remembered past the span moving)
+
