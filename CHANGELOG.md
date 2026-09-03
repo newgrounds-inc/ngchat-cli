@@ -38,6 +38,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   character completes slash commands, rank-filtered to what the viewer
   may use and refreshed on a mid-session rank change; aliases match and
   `*` wildcards, but the canonical name is always what gets inserted.
+  Starting a word with `ng…`/`tf…` completes NG "dank meme" emote
+  shortcodes from an embedded list generated from the site's own
+  emoticon data.
 - CI on every pull request and push to `main` (vet, race tests on
   Linux, macOS and best-effort Windows, `go mod tidy` drift, GoReleaser
   snapshot build); the release workflow runs the Linux and macOS tests

@@ -72,18 +72,18 @@ this extends), `newgrounds-inc/ngchat`
 
 ### Phase 3: emotes (NG "dank memes")
 
-- [ ] `internal/complete/gen`: `go generate` reads the upstream
+- [x] `internal/complete/gen`: `go generate` reads the upstream
       checkout (`NGCHAT_UPSTREAM`, no default) and writes
       `emotes_gen.go` from the two JSON lists plus `ngrandom`, header
       carries the upstream commit.
-- [ ] `complete.Emotes`: trigger `(?:^|\s)(ng[a-z*][0-9a-z*]+|tf[0-9a-z*]{2,})$`
+- [x] `complete.Emotes`: trigger `(?:^|\s)(ng[a-z*][0-9a-z*]+|tf[0-9a-z*]{2,})$`
       (RE2 has no lookbehind, the leading group replaces it), the
       whole token is the term, three-tier ranking, replacement
       `shortcode ` with no delimiters, list opens only when there is
       at least one match.
-- [ ] Tests: `ngl` does not trigger, `ngle` does, `tfw` does not,
+- [x] Tests: `ngl` does not trigger, `ngle` does, `tfw` does not,
       `ngrandom` present, sticky dismiss on an ordinary word.
-- [ ] Docs: README, manual test plan, CHANGELOG, `AGENTS.md` sync
+- [x] Docs: README, manual test plan, CHANGELOG, `AGENTS.md` sync
       note extended to the emote list.
 
 ### Phase 4: emoji

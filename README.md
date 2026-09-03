@@ -79,7 +79,9 @@ to go back.
   `shift+tab` or the up/down arrows move, `enter` accepts, `esc`
   closes; a window under about 9 rows previews the candidate in the
   line instead). `/` as the first character completes slash commands
-  you may use (aliases match, the full name is inserted).
+  you may use (aliases match, the full name is inserted). Starting a
+  word with `ng…`/`tf…` completes NG "dank meme" emote shortcodes from
+  an embedded list, the same way.
 - `/who` lists who is in the channel (mods marked `@`, away users
   dimmed). Every other slash command (`/me`, `/slap`, `/dm`, `/roll`,
   ...) goes to the server, which parses them.

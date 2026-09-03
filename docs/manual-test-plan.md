@@ -140,6 +140,13 @@ screen or a reconnect loop.
       cursor after "ki") and accept: only the span up to the cursor is
       replaced, and the "ck" typed after the cursor stays in place
       after the inserted text.
+- [ ] Typing `ngaho` opens the emote list with `ngaHoldup` first;
+      `enter` accepts it, leaving `ngaHoldup ` in the line with no
+      other delimiter.
+- [ ] An ordinary word like `ngl` opens nothing.
+- [ ] `esc` on a word that opened the emote list keeps it quiet while
+      you keep typing the same word, and it opens again on the next
+      new word.
 
 - [ ] The splash: the wordmark sweeps in over about 1.5 s, holds until
       online, then the chat screen replaces it with no residue. Any key
