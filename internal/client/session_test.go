@@ -77,6 +77,11 @@ type fakeServer struct {
 	// frame carrying the channel ID and this message and leaves the
 	// socket open, the way a channel ban is refused.
 	denySubscribe string
+	// subscribed, when set, supplies the raw subscribed envelope for a
+	// given attempt instead of the empty default; nil keeps the default.
+	subscribed func(attempt int) []byte
+	// connTimeout bounds one connection's handler; zero means 5s.
+	connTimeout time.Duration
 }
 
 func newFakeServer(t *testing.T, s script) *fakeServer {
@@ -100,7 +105,11 @@ func (fs *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	timeout := fs.connTimeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	attempt := int(fs.attempts.Add(1))
 
@@ -167,8 +176,18 @@ func (fs *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		quietFor(fs.t, next, 300*time.Millisecond)
 		return
 	}
-	_ = send(ctx, conn, map[string]any{"name": "subscribed",
-		"channelID": 3, "messageBuffer": []any{}, "serverTime": 1})
+	var raw []byte
+	if fs.subscribed != nil {
+		raw = fs.subscribed(attempt)
+	}
+	if raw == nil {
+		_ = send(ctx, conn, map[string]any{"name": "subscribed",
+			"channelID": 3, "messageBuffer": []any{}, "serverTime": 1})
+	} else if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+		// The client dropped the socket mid-frame (read limit); the
+		// script has nothing to do.
+		return
+	}
 
 	reason := fs.script(conn, attempt, next)
 	conn.Close(websocket.StatusNormalClosure, reason)
@@ -193,7 +212,15 @@ func quietFor(t *testing.T, next nextFn, d time.Duration) {
 // every event until Run returns.
 func runUntilStopped(t *testing.T, fs *fakeServer, m *countingMinter) []Event {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return runUntilStoppedFor(t, fs, m, 5*time.Second)
+}
+
+// runUntilStoppedFor is runUntilStopped with its own budget, for the
+// multi-megabyte frames that are slow under the race detector.
+func runUntilStoppedFor(t *testing.T, fs *fakeServer, m *countingMinter,
+	budget time.Duration) []Event {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	c := New(Config{WSURL: fs.url, Channel: "general", Minter: m})
 	go c.Run(ctx)
@@ -591,5 +618,122 @@ func TestChannelBanStops(t *testing.T) {
 	}
 	if got := fs.attempts.Load(); got != 1 {
 		t.Errorf("connections = %d, want 1 (no reconnect)", got)
+	}
+}
+
+// maxLegalSubscribed builds the largest envelope the read limit is
+// derived from: 25 backfill messages and 100 notifications, each with
+// both text fields at 5000 four-byte runes, and maxRosterRows roster
+// rows each carrying a full-size away message the same two ways (the
+// server caps neither). It must fit under maxFrameBytes.
+func maxLegalSubscribed(t *testing.T) []byte {
+	t.Helper()
+	text := strings.Repeat("\U0001F600", 5000)
+	buffer := make([]json.RawMessage, 0, 25)
+	for i := range 25 {
+		raw, _ := json.Marshal(map[string]any{"name": "message", "channelID": 3,
+			"id": i + 1, "message": text, "messageRaw": text, "username": "bob",
+			"userID": 7, "serverTime": 1})
+		buffer = append(buffer, raw)
+	}
+	notes := make([]map[string]any, 0, 100)
+	for range 100 {
+		notes = append(notes, map[string]any{"message": text, "messageRaw": text,
+			"messageType": "message", "serverTime": 1, "userID": 7, "username": "bob"})
+	}
+	users := make([]map[string]any, 0, maxRosterRows)
+	for i := range maxRosterRows {
+		users = append(users, map[string]any{"userID": i,
+			"username": "user" + strconv.Itoa(i), "isAway": true,
+			"awayMessage": text, "awayMessageRaw": text,
+			"userIcon":    "https://x.newgrounds.com/icon.png",
+			"userPageURL": "https://x.newgrounds.com"})
+	}
+	raw, err := json.Marshal(map[string]any{"name": "subscribed", "channelID": 3,
+		"channelName": "general", "messageBuffer": buffer, "userList": users,
+		"notifications": notes, "serverTime": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// oversizedSubscribed returns a syntactically valid envelope one byte
+// over the read limit, padded through one message's raw text.
+func oversizedSubscribed() []byte {
+	const prefix = `{"name":"subscribed","channelID":3,"messageBuffer":[{"name":"message","channelID":3,"id":1,"username":"bob","userID":7,"serverTime":1,"message":"hi","messageRaw":"`
+	const suffix = `"}],"serverTime":1}`
+	pad := maxFrameBytes + 1 - len(prefix) - len(suffix)
+	return []byte(prefix + strings.Repeat("x", pad) + suffix)
+}
+
+// TestReadLimitFitsLargestEnvelope: the default 32 KiB limit rejected a
+// legal subscribed with four full-size messages, locking clients out of
+// a channel with a few long messages in its buffer.
+func TestReadLimitFitsLargestEnvelope(t *testing.T) {
+	raw := maxLegalSubscribed(t)
+	if len(raw) > maxFrameBytes {
+		t.Fatalf("largest legal envelope is %d bytes, over the %d limit",
+			len(raw), maxFrameBytes)
+	}
+	t.Logf("largest legal envelope: %d bytes (limit %d)", len(raw), maxFrameBytes)
+	fs := newFakeServer(t, func(*websocket.Conn, int, nextFn) string {
+		return "server close"
+	})
+	fs.subscribed = func(int) []byte { return raw }
+	fs.connTimeout = 60 * time.Second
+	events := runUntilStoppedFor(t, fs, &countingMinter{}, 60*time.Second)
+	var sub *protocol.Subscribed
+	for _, e := range events {
+		if s, ok := e.Msg.(protocol.Subscribed); ok {
+			sub = &s
+		}
+	}
+	if sub == nil {
+		t.Fatal("the largest legal envelope never reached the UI")
+	}
+	if len(sub.UserList) != maxRosterRows || len(sub.Notifications) != 100 {
+		t.Errorf("roster %d, notifications %d; want %d and 100",
+			len(sub.UserList), len(sub.Notifications), maxRosterRows)
+	}
+	if got := len(msgIDs(events)); got != 25 {
+		t.Errorf("replayed %d backfill messages, want 25", got)
+	}
+	if fs.attempts.Load() != 1 {
+		t.Errorf("connections = %d, want 1", fs.attempts.Load())
+	}
+}
+
+// TestReadLimitIsEnforced: one byte over maxFrameBytes drops the socket
+// (the limit is still a limit), and the session reconnects rather than
+// hanging; the next, ordinary subscribe goes through.
+func TestReadLimitIsEnforced(t *testing.T) {
+	fs := newFakeServer(t, func(*websocket.Conn, int, nextFn) string {
+		return "server close"
+	})
+	fs.subscribed = func(attempt int) []byte {
+		if attempt == 1 {
+			return oversizedSubscribed()
+		}
+		return nil
+	}
+	events := runUntilStopped(t, fs, &countingMinter{})
+	if got := fs.attempts.Load(); got != 2 {
+		t.Fatalf("connections = %d, want 2 (oversized frame, then reconnect)", got)
+	}
+	var reconnects int
+	for _, e := range events {
+		if e.State == StateReconnecting {
+			reconnects++
+			if e.Err == nil || !strings.Contains(e.Err.Error(), "too big") {
+				t.Errorf("reconnect reason = %v, want the read limit", e.Err)
+			}
+		}
+	}
+	if reconnects != 1 {
+		t.Errorf("reconnects = %d, want 1", reconnects)
+	}
+	if !hasMsg[protocol.Subscribed](events) {
+		t.Error("the reconnect's subscribe never reached the UI")
 	}
 }

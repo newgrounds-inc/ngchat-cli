@@ -121,6 +121,22 @@ const (
 	// dedupeWindow bounds the remembered message IDs used to collapse
 	// reconnect backfill against what was already displayed.
 	dedupeWindow = 500
+	// maxFrameBytes caps one inbound frame. coder/websocket's default is
+	// 32 KiB, which a legal subscribed envelope exceeds. Every repeated
+	// field in it, at the 4-byte UTF-8 ceiling for a 5000-character text
+	// (20,000 B) carried twice (rendered HTML and raw): 25 backfill
+	// events and 100 notifications are 125 × 40,000 B = 5 MB; the roster
+	// is uncapped by the server, and each row carries an away message the
+	// same two ways, so it is bounded here by maxRosterRows × 40,000 B =
+	// 40 MB. 64 MiB covers the sum with room for HTML expansion, the
+	// fixed fields and JSON syntax, and is still a bounded allocation per
+	// frame. A channel past maxRosterRows users with long away messages
+	// would need server-side chunking; nothing in the protocol allows a
+	// client to ask for less.
+	maxFrameBytes = 64 << 20
+	// maxRosterRows is the roster size the read limit is derived from.
+	// The server has no cap; a supporter-only channel is nowhere near it.
+	maxRosterRows = 1000
 )
 
 // Client runs one chat session with automatic reconnect.
@@ -276,6 +292,7 @@ func (c *Client) session(ctx context.Context) (established bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("dialing %s: %w", c.cfg.WSURL, err)
 	}
+	conn.SetReadLimit(maxFrameBytes)
 	c.mu.Lock()
 	c.conn = conn
 	c.channelID = 0
