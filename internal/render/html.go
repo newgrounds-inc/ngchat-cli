@@ -57,20 +57,21 @@ type link struct {
 // (kitty, WezTerm, Ghostty, iTerm2, recent GNOME and Windows terminals)
 // make it clickable. Terminals that do not simply show the text; the
 // sequence is zero-width for lipgloss, so wrapping and padding stay
-// correct either way. An empty url returns text unchanged.
+// correct either way. A url that is not http(s) (see safeHref) returns
+// text unchanged: the target sits inside an escape sequence, so it is
+// the one place a control character could end the sequence early.
 func Hyperlink(url, text string) string {
+	url = safeHref(url)
 	if url == "" {
 		return text
-	}
-	// The site writes user-page links scheme-relative ("//bob.newgrounds.com");
-	// a terminal has no page scheme to inherit, so pick the site's.
-	if strings.HasPrefix(url, "//") {
-		url = "https:" + url
 	}
 	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
 }
 
-// Text renders one message's HTML fragment to ANSI terminal text.
+// Text renders one message's HTML fragment to ANSI terminal text. Every
+// piece of it, text and attribute alike, passes through Plain first: the
+// tokenizer decodes entities, so "&#27;" is a live ESC by the time it is
+// text.
 //
 // Links become OSC 8 hyperlinks (see Hyperlink). Emote sprites
 // (<span class="ng-emoticon-...">) become ":code:" — the classes reference
@@ -100,7 +101,7 @@ func Text(fragment string) string {
 		t := tok.Token()
 		switch tt {
 		case html.TextToken:
-			appendText(t.Data)
+			appendText(Plain(t.Data))
 		case html.SelfClosingTagToken, html.StartTagToken:
 			switch t.Data {
 			case "br":
@@ -114,13 +115,13 @@ func Text(fragment string) string {
 			case "code", "pre":
 				state.code++
 			case "a":
-				links = append(links, &link{href: attr(t, "href")})
+				links = append(links, &link{href: safeHref(attr(t, "href"))})
 			case "img":
-				src := attr(t, "src")
+				src := Line(attr(t, "src"))
 				// The separator is conditional: without alt text an
 				// image-only message would start with a stray space.
 				sep := ""
-				if alt := attr(t, "alt"); alt != "" {
+				if alt := Line(attr(t, "alt")); alt != "" {
 					appendText("[" + alt + "]")
 					sep = " "
 				}
@@ -152,9 +153,10 @@ func Text(fragment string) string {
 					// already a hyperlink: a terminal without OSC 8
 					// support would otherwise show a bare word with no
 					// way to reach the URL. A mention is the exception:
-					// "@bob" already names where it goes.
+					// "@bob" already names where it goes, provided the
+					// href really is bob's page (mentionTarget).
 					text := strings.TrimSpace(l.text.String())
-					if l.href != "" && text != l.href && !strings.HasPrefix(text, "@") {
+					if l.href != "" && text != l.href && !mentionTarget(text, l.href) {
 						out.WriteString(Hyperlink(l.href,
 							dimStyle.Render(" <"+l.href+">")))
 					}
@@ -181,10 +183,10 @@ func emoteCode(t html.Token) string {
 	if !strings.Contains(attr(t, "class"), "ng-emoticon") {
 		return ""
 	}
-	if title := attr(t, "title"); title != "" {
+	if title := Line(attr(t, "title")); title != "" {
 		return title
 	}
-	for _, cls := range strings.Fields(attr(t, "class")) {
+	for _, cls := range strings.Fields(Line(attr(t, "class"))) {
 		if code, ok := strings.CutPrefix(cls, "ng-emoticon-"); ok && code != "" {
 			return code
 		}
