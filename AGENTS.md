@@ -17,7 +17,9 @@ NGCHAT_UPSTREAM=~/dev/ngchat go generate ./internal/complete   # regen embedded 
 
 Live verification uses the headless harness in `cmd/smoke` — it runs the
 full stack (mint → connect → authenticate → subscribe → send) and prints
-event summaries, never tokens or cookies:
+event summaries, never tokens or cookies. With no variables set it runs
+against production, which is the only option outside Newgrounds: the
+dev stack below is internal to NG staff.
 
 ```sh
 export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws

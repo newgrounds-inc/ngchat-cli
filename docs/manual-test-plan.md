@@ -13,7 +13,9 @@ public. Run the whole of section 1 on every platform; the rest is
 Platforms in hand: Linux/amd64, macOS/arm64, Windows/amd64 (VM),
 Windows/arm64 (VM). Tick a box per platform where it says (each).
 
-Use the dev stack throughout so bans and kicks are harmless:
+Use the dev stack throughout so bans and kicks are harmless (it is
+internal to NG staff; outside the company this plan runs against
+production, where they are not):
 
 ```sh
 export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws

@@ -14,8 +14,12 @@ for what each release added.
 Grab a binary from [Releases](../../releases), or:
 
 ```sh
-go install github.com/newgrounds-inc/ngchat-cli/cmd/ngchat@latest
+go install github.com/newgrounds-inc/ngchat-cli/cmd/ngchat@v1.0.0-rc.4
 ```
+
+Until `v1.0.0` is tagged, `@latest` resolves to the old `v0.1.0`
+scaffold rather than the current release candidate, so name the
+version.
 
 Each release ships a `checksums.txt` next to the archives. It catches a
 corrupt download, not a swapped one: it is published from the same
@@ -100,15 +104,20 @@ to go back.
 
 ## Development
 
-Against the NG dev/staging stack:
-
-```sh
-export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws
-export NGCHAT_SITE_URL=https://www.newgrounds-d.com
-export NGCHAT_ROUTING_COOKIE='serverid=bcolby2'   # dev proxy routing (this project's backend)
-```
+Build and test against production, the default endpoints: there is no
+public dev stack. Remember that a test run is a real session on the real
+site. The site's chat-token limiter counts against your account before
+it checks anything else, so a loop that re-mints locks your own browser
+out of chat too, and a kick or ban earned while testing is a real one.
+`NGCHAT_SITE_URL`, `NGCHAT_WS_URL` and `NGCHAT_ROUTING_COOKIE` exist so
+Newgrounds staff can point a build at an internal stack; they do nothing
+useful outside the company.
 
 `NGCHAT_NG_COOKIE` (a raw cookie header) bypasses the stored login.
+`go run ./cmd/smoke` runs the whole stack headlessly (mint, connect,
+authenticate, subscribe, send) and prints event summaries, never tokens;
+it is the right tool for protocol or auth changes, since the TUI takes
+over the screen.
 
 Design notes live in [CONTEXT.md](CONTEXT.md) and [docs/adr/](docs/adr/).
 CI runs vet, the race tests, and a GoReleaser snapshot build on every
