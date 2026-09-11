@@ -6,8 +6,8 @@ binary for macOS, Linux, and Windows.
 Chats in `#general`, renders formatted messages, shows who is around,
 pings you on mentions, and renews its token in place every hour so an
 evening's session never drops. Images (Kitty graphics protocol) and
-channel switching are on the roadmap; see [CHANGELOG.md](CHANGELOG.md)
-for what each release added.
+channel switching are on the [roadmap](docs/roadmap.md); see
+[CHANGELOG.md](CHANGELOG.md) for what each release added.
 
 ## Install
 

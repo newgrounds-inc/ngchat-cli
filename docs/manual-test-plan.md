@@ -2,7 +2,7 @@
 
 Status: draft 2026-09-02
 Owner: Brendon C.
-Related: `docs/plans/mvp-release.md` (Phase 4), ADR 0001, ADR 0003
+Related: `docs/roadmap.md`, ADR 0001, ADR 0003
 
 Automated tests cover the protocol, the login flow against fakes, and
 the rendering. What they cannot cover is a real terminal on a real OS

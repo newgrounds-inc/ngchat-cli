@@ -282,8 +282,9 @@ the captured copy would stay stuck on the empty one `New` made.
   options → consequences). Domain vocabulary lives in `CONTEXT.md` — use
   those terms ("re-mint", "backfill buffer", "gap", not "refresh",
   "scrollback", "history").
-- `docs/site-login-endpoints.md` is a working brief for the *site* repo,
-  not work to do here.
+- `docs/site-login-endpoints.md` is the site contract `internal/auth`
+  and its `httptest` fakes follow; the site itself is a separate
+  codebase. `docs/roadmap.md` lists what is out of scope and planned.
 - Secrets never touch stdout or logs; `cmd/smoke` prints summaries only.
 - Tests are table-driven and hermetic: no network (use `httptest`), and no
   writes to the real OS keyring or config dir (override `XDG_CONFIG_HOME`
