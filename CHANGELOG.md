@@ -115,6 +115,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   markup.
 - `ctrl+s`, `ctrl+t` and a resize keep the reader's place in the
   transcript instead of jumping to the bottom.
+- A terminal that shrinks while the reader is at the bottom keeps them
+  there instead of leaving them scrolled up under the `more messages
+  below` banner.
 
 ## [0.1.0] - 2026-08-13
 
