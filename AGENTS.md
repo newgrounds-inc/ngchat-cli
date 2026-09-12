@@ -20,6 +20,10 @@ Verifying a protocol or auth change live, watching a token renewal, or
 running against the NG-internal dev stack: `docs/smoke.md` (the
 headless `cmd/smoke` harness; `cmd/ngchat` is for UI work only).
 
+Tagging a release candidate or `v1.0.0`: `docs/release.md` (the pin
+commit, what the `v*` tag triggers, and what to do when the workflow
+fails).
+
 ## Architecture
 
 Four layers, each one package, with a channel as the only seam between
