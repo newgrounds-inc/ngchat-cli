@@ -14,7 +14,7 @@ channel switching are on the [roadmap](docs/roadmap.md); see
 Grab a binary from [Releases](../../releases), or:
 
 ```sh
-go install github.com/newgrounds-inc/ngchat-cli/cmd/ngchat@v1.0.0-rc.4
+go install github.com/newgrounds-inc/ngchat-cli/cmd/ngchat@v1.0.0-rc.5
 ```
 
 Until `v1.0.0` is tagged, `@latest` resolves to the old `v0.1.0`

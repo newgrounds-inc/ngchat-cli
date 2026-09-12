@@ -21,11 +21,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   moderators marked and away users dimmed with their away message.
 - Mention and DM highlight with a terminal bell; `-quiet` keeps the
   highlight and drops the bell. A backfilled mention never rings.
-- OSC 8 hyperlinks for links and mentions, with the visible URL kept
-  for terminals without hyperlink support.
+- OSC 8 hyperlinks for links and mentions; a labelled link shows only
+  its label, as on the web.
 - `ctrl+t` toggles server timestamps, shown in the local zone.
-- `away` messages and the subscribe notifications inbox render as faint
-  event rows.
+- `away` messages, `/me`, `/slap` and the subscribe notifications inbox
+  render as faint event rows, worded as the server sends them.
 - `-debug` writes redacted frames and state transitions to a `0600` log
   in the per-user state directory; the path is printed on exit.
 - The server's entry-gate notice (not a supporter, under 18, e-mail not
