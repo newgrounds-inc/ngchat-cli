@@ -36,11 +36,9 @@ the intent.
 
 ## Deepening candidates
 
-From the September 2026 architecture review (full report with
-before/after diagrams:
-<https://claude.ai/code/artifact/b8c75a7b-7462-4d27-ba63-476b5ae0852b>).
-Candidate 1, the transcript package, landed as ADR 0007. The rest, in
-the order worth taking them:
+From the September 2026 architecture review. Candidate 1, the
+transcript package, landed as ADR 0007. The rest, in the order worth
+taking them:
 
 - **One "prepare a run" step for `cmd/ngchat` and `cmd/smoke`** (strong,
   cheapest). Site construction, the cookie-header override vs the
