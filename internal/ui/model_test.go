@@ -351,19 +351,20 @@ func TestRosterFollowsPresence(t *testing.T) {
 		t.Error("userUpdated did not patch the roster")
 	}
 	m.handleEvent(client.Event{Msg: protocol.Away{UserID: 2, Username: "bob",
-		IsAway: true, AwayMessage: "<i>lunch</i>", ServerTime: 2}})
-	if !m.users[2].IsAway || m.users[2].AwayMessage != "<i>lunch</i>" {
+		IsAway: true, AwayMessage: "bob has stepped away from chat: <i>lunch</i>",
+		ServerTime: 2}})
+	if !m.users[2].IsAway || !strings.HasSuffix(m.users[2].AwayMessage, "<i>lunch</i>") {
 		t.Errorf("away did not patch bob: %+v", m.users[2])
 	}
 	last := plain(m.renderItem(m.items[len(m.items)-1]))
-	if last != "bob is away: lunch" {
+	if last != "bob has stepped away from chat: lunch" {
 		t.Errorf("away row = %q", last)
 	}
 	m.handleEvent(client.Event{Msg: protocol.Away{UserID: 2, Username: "bob"}})
 	if m.users[2].IsAway {
 		t.Error("coming back did not clear the away flag")
 	}
-	if last := plain(m.renderItem(m.items[len(m.items)-1])); last != "bob is back" {
+	if last := plain(m.renderItem(m.items[len(m.items)-1])); last != "bob is back." {
 		t.Errorf("back row = %q", last)
 	}
 	// A fresh subscribe (reconnect) replaces the roster wholesale.

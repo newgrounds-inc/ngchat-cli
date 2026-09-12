@@ -562,17 +562,20 @@ func rosterEntry(u protocol.UserJoined) protocol.ChannelUser {
 	}
 }
 
-// awayText phrases an away frame as an event row.
+// awayText phrases an away frame as an event row. The server's
+// awayMessage is already a whole sentence naming the user ("bob has
+// stepped away from chat: lunch", "bob is back."), so it is shown as
+// is, like the web client does; the fallback phrasing is the web
+// client's for a frame that carries none.
 func (m Model) awayText(a protocol.Away) string {
+	if a.AwayMessage != "" {
+		return m.st.event.Render(render.Text(a.AwayMessage))
+	}
 	name := render.Line(a.Username)
 	if !a.IsAway {
-		return m.st.event.Render(name + " is back")
+		return m.st.event.Render(name + " is back.")
 	}
-	text := name + " is away"
-	if a.AwayMessage != "" {
-		text += ": " + render.Text(a.AwayMessage)
-	}
-	return m.st.event.Render(text)
+	return m.st.event.Render(name + " has stepped away from chat.")
 }
 
 // pushNotices replays the newest rows of the away-inbox, oldest first so
