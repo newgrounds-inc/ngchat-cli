@@ -1098,8 +1098,10 @@ func (m *Model) renderItem(it item) string {
 		}
 		return prefix + m.st.event.Render(render.Text(it.html))
 	case "me", "slap":
-		return prefix + m.st.event.Render("* "+render.Line(it.username)+" "+
-			render.Text(it.html))
+		// The server already leads the HTML with the actor's username
+		// ("bob waves"), as the web client relies on; only the "* "
+		// marker is ours.
+		return prefix + m.st.event.Render("* "+render.Text(it.html))
 	}
 
 	name := m.st.user

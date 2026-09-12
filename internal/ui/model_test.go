@@ -99,8 +99,10 @@ func TestRenderItemFormatsSpeaker(t *testing.T) {
 		t.Errorf("dm row = %q, want a [DM] prefix", got)
 	}
 
+	// The server's HTML already names the actor, so the row must not
+	// repeat it.
 	m.pushMessage(protocol.Message{Name: "meMessage", Username: "bob",
-		Message: "waves"}, false)
+		Message: "bob waves"}, false)
 	if got := plain(m.renderItem(m.items[2])); got != "* bob waves" {
 		t.Errorf("me row = %q", got)
 	}
