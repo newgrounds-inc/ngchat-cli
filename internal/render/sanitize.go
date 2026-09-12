@@ -69,6 +69,16 @@ func safeHref(href string) string {
 	return ""
 }
 
+// siteDomains are the domains the server's config builds mention hrefs
+// from: production, staging and development. The staging and dev ones
+// are internal to Newgrounds, but a mention there must still collapse
+// to its name, or every /slap on the dev stack trails a user-page URL.
+var siteDomains = []string{
+	"newgrounds.com",
+	"newgrounds-s.com",
+	"newgrounds-d.com",
+}
+
 // mentionTarget reports whether href is where the site sends a mention
 // of text: "@bob" goes to bob's user page, and a group mention such as
 // "@!everyone" goes to the site itself. Only then can the visible
@@ -84,8 +94,16 @@ func mentionTarget(text, href string) bool {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	if strings.HasPrefix(name, "!") {
-		return host == "www.newgrounds.com" || host == "newgrounds.com"
+	for _, domain := range siteDomains {
+		if strings.HasPrefix(name, "!") {
+			if host == domain || host == "www."+domain {
+				return true
+			}
+			continue
+		}
+		if host == strings.ToLower(name)+"."+domain {
+			return true
+		}
 	}
-	return host == strings.ToLower(name)+".newgrounds.com"
+	return false
 }
