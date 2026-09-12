@@ -20,6 +20,7 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 	"github.com/newgrounds-inc/ngchat-cli/internal/splash"
 	"github.com/newgrounds-inc/ngchat-cli/internal/theme"
+	"github.com/newgrounds-inc/ngchat-cli/internal/transcript"
 )
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\`)
@@ -27,20 +28,27 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\`)
 func plain(s string) string { return ansi.ReplaceAllString(s, "") }
 
 // newModel builds a Model with no chat client; the tests here never send, and
-// the transcript renders lazily so no viewport is needed.
+// the transcript draws nothing until sized so no viewport is needed.
 func newModel() Model { return New(nil, Options{Channel: "general"}) }
+
+// rows is what the model's transcript holds.
+func rows(m Model) []transcript.Row { return m.tr.Rows() }
+
+// rowText is the plain text of a Text-carrying row (event, error,
+// roster); how it is drawn is the transcript package's to test.
+func rowText(m Model, i int) string { return plain(rows(m)[i].Text) }
 
 func TestPushMessageClassifiesVariants(t *testing.T) {
 	tests := []struct {
 		wireName string
-		wantKind string
+		wantKind transcript.Kind
 	}{
-		{"message", "chat"},
-		{"meMessage", "me"},
-		{"slapMessage", "slap"},
-		{"serverMessage", "server"},
-		{"directMessage", "dm"},
-		{"somethingNew", "chat"}, // unrecognized variants still display
+		{"message", transcript.Chat},
+		{"meMessage", transcript.Me},
+		{"slapMessage", transcript.Slap},
+		{"serverMessage", transcript.Server},
+		{"directMessage", transcript.DM},
+		{"somethingNew", transcript.Chat}, // unrecognized variants still display
 	}
 
 	for _, tc := range tests {
@@ -49,78 +57,13 @@ func TestPushMessageClassifiesVariants(t *testing.T) {
 			m.pushMessage(protocol.Message{
 				Name: tc.wireName, Username: "bob", Message: "hi",
 			}, false)
-			if len(m.items) != 1 {
-				t.Fatalf("got %d items, want 1", len(m.items))
+			if len(rows(m)) != 1 {
+				t.Fatalf("got %d rows, want 1", len(rows(m)))
 			}
-			if m.items[0].kind != tc.wantKind {
-				t.Errorf("kind = %q, want %q", m.items[0].kind, tc.wantKind)
+			if got := rows(m)[0].Kind; got != tc.wantKind {
+				t.Errorf("kind = %d, want %d", got, tc.wantKind)
 			}
 		})
-	}
-}
-
-// TestSpoilerToggle: the raw HTML is kept on the item so ctrl+s can re-render
-// from source instead of losing the hidden text.
-func TestSpoilerToggle(t *testing.T) {
-	m := newModel()
-	m.pushMessage(protocol.Message{
-		Name: "message", Username: "bob",
-		Message: "the butler did it", IsSpoiler: true,
-	}, false)
-
-	hidden := plain(m.renderItem(m.items[0]))
-	if strings.Contains(hidden, "butler") {
-		t.Errorf("spoiler text leaked while hidden: %q", hidden)
-	}
-	if !strings.Contains(hidden, "ctrl+s") {
-		t.Errorf("hidden spoiler should say how to reveal it: %q", hidden)
-	}
-
-	m.revealSpoilers = true
-	revealed := plain(m.renderItem(m.items[0]))
-	if !strings.Contains(revealed, "the butler did it") {
-		t.Errorf("revealed spoiler = %q", revealed)
-	}
-}
-
-func TestRenderItemFormatsSpeaker(t *testing.T) {
-	m := newModel()
-	m.self = "me"
-
-	m.pushMessage(protocol.Message{Name: "message", Username: "bob",
-		Message: "hi"}, false)
-	if got := plain(m.renderItem(m.items[0])); got != "<bob> hi" {
-		t.Errorf("chat row = %q", got)
-	}
-
-	m.pushMessage(protocol.Message{Name: "directMessage", Username: "bob",
-		Message: "psst"}, false)
-	if got := plain(m.renderItem(m.items[1])); !strings.HasPrefix(got, "[DM] ") {
-		t.Errorf("dm row = %q, want a [DM] prefix", got)
-	}
-
-	// The server's HTML already names the actor, so the row must not
-	// repeat it.
-	m.pushMessage(protocol.Message{Name: "meMessage", Username: "bob",
-		Message: "bob waves"}, false)
-	if got := plain(m.renderItem(m.items[2])); got != "* bob waves" {
-		t.Errorf("me row = %q", got)
-	}
-}
-
-// TestRenderItemConvertsHTML confirms the transcript goes through the render
-// package rather than printing raw markup.
-func TestRenderItemConvertsHTML(t *testing.T) {
-	m := newModel()
-	m.pushMessage(protocol.Message{Name: "message", Username: "bob",
-		Message: `say <strong>hi</strong> to <a href="https://x.test">x</a>`}, false)
-
-	got := plain(m.renderItem(m.items[0]))
-	if strings.Contains(got, "<strong>") {
-		t.Errorf("raw HTML reached the transcript: %q", got)
-	}
-	if !strings.Contains(got, "say hi to x") {
-		t.Errorf("row = %q", got)
 	}
 }
 
@@ -128,11 +71,8 @@ func TestHandleEventGapMarker(t *testing.T) {
 	m := newModel()
 	m.handleEvent(client.Event{State: client.StateOnline, Gap: true})
 
-	if len(m.items) != 1 || m.items[0].kind != "gap" {
-		t.Fatalf("expected a gap marker, got %+v", m.items)
-	}
-	if got := plain(m.renderItem(m.items[0])); !strings.Contains(got, "missing") {
-		t.Errorf("gap row should say history is missing: %q", got)
+	if len(rows(m)) != 1 || rows(m)[0].Kind != transcript.Gap {
+		t.Fatalf("expected a gap marker, got %+v", rows(m))
 	}
 }
 
@@ -144,8 +84,8 @@ func TestHandleEventAuthenticatedSetsSelf(t *testing.T) {
 		t.Errorf("self = %q, want bob", m.self)
 	}
 	m.handleEvent(client.Event{Msg: client.BackfillDone{}})
-	if len(m.items) != 0 {
-		t.Errorf("an empty MOTD should not push a row: %+v", m.items)
+	if len(rows(m)) != 0 {
+		t.Errorf("an empty MOTD should not push a row: %+v", rows(m))
 	}
 }
 
@@ -155,16 +95,16 @@ func TestMOTDFollowsBackfill(t *testing.T) {
 	m := newModel()
 	m.handleEvent(client.Event{Msg: protocol.Authenticated{Username: "bob",
 		MOTD: json.RawMessage(`"Welcome to <b>NG Chat</b>"`)}})
-	if len(m.items) != 0 {
-		t.Fatalf("MOTD pushed before the backfill: %+v", m.items)
+	if len(rows(m)) != 0 {
+		t.Fatalf("MOTD pushed before the backfill: %+v", rows(m))
 	}
 	m.handleEvent(client.Event{Backfill: true, Msg: protocol.Message{
 		Name: "message", Username: "ann", Message: "old"}})
 	m.handleEvent(client.Event{Msg: client.BackfillDone{}})
-	if len(m.items) != 2 {
-		t.Fatalf("rows = %d, want history then MOTD", len(m.items))
+	if len(rows(m)) != 2 {
+		t.Fatalf("rows = %d, want history then MOTD", len(rows(m)))
 	}
-	if got := plain(m.renderItem(m.items[1])); got != "Welcome to NG Chat" {
+	if got := rowText(m, 1); got != "Welcome to NG Chat" {
 		t.Errorf("MOTD row = %q", got)
 	}
 }
@@ -207,8 +147,8 @@ func TestTypingClearedOnLeave(t *testing.T) {
 	if len(m.typing) != 0 {
 		t.Errorf("typing should clear when the user leaves: %v", m.typing)
 	}
-	if len(m.items) != 1 || m.items[0].kind != "event" {
-		t.Errorf("expected a leave notice, got %+v", m.items)
+	if len(rows(m)) != 1 || rows(m)[0].Kind != transcript.Event {
+		t.Errorf("expected a leave notice, got %+v", rows(m))
 	}
 }
 
@@ -283,8 +223,8 @@ func TestSignedOutQuits(t *testing.T) {
 	if plain(m.stateLabel()) != "disconnected: kicked" {
 		t.Errorf("status = %q", m.stateLabel())
 	}
-	if len(m.items) != 1 || plain(m.renderItem(m.items[0])) != "disconnected: kicked" {
-		t.Errorf("transcript rows = %+v, want the stop reason", m.items)
+	if len(rows(m)) != 1 || rowText(m, 0) != "disconnected: kicked" {
+		t.Errorf("transcript rows = %+v, want the stop reason", rows(m))
 	}
 }
 
@@ -341,10 +281,10 @@ func TestRosterFollowsPresence(t *testing.T) {
 	}
 	m.handleEvent(joined(3, "carol", false))
 	m.handleEvent(client.Event{Msg: protocol.UserLeft{UserID: 1, Username: "ann"}})
-	rows := len(m.items)
+	n := len(rows(m))
 	m.handleEvent(client.Event{Msg: protocol.UserUpdated{UserID: 3, Username: "carol",
 		IsChatMod: true}})
-	if len(m.items) != rows {
+	if len(rows(m)) != n {
 		t.Errorf("userUpdated pushed a row; it must be silent")
 	}
 	if !m.users[3].IsChatMod {
@@ -356,7 +296,7 @@ func TestRosterFollowsPresence(t *testing.T) {
 	if !m.users[2].IsAway || !strings.HasSuffix(m.users[2].AwayMessage, "<i>lunch</i>") {
 		t.Errorf("away did not patch bob: %+v", m.users[2])
 	}
-	last := plain(m.renderItem(m.items[len(m.items)-1]))
+	last := rowText(m, len(rows(m))-1)
 	if last != "bob has stepped away from chat: lunch" {
 		t.Errorf("away row = %q", last)
 	}
@@ -364,7 +304,7 @@ func TestRosterFollowsPresence(t *testing.T) {
 	if m.users[2].IsAway {
 		t.Error("coming back did not clear the away flag")
 	}
-	if last := plain(m.renderItem(m.items[len(m.items)-1])); last != "bob is back." {
+	if last := rowText(m, len(rows(m))-1); last != "bob is back." {
 		t.Errorf("back row = %q", last)
 	}
 	// A fresh subscribe (reconnect) replaces the roster wholesale.
@@ -377,8 +317,9 @@ func TestRosterFollowsPresence(t *testing.T) {
 
 func TestWhoListsSortedWithMarks(t *testing.T) {
 	m := newModel()
-	if got := plain(m.whoText()); got != "no user list yet" {
-		t.Errorf("empty who = %q", got)
+	m.pushWho()
+	if got := rowText(m, 0); got != "no user list yet" || rows(m)[0].Kind != transcript.Event {
+		t.Errorf("empty who = %q (kind %d)", got, rows(m)[0].Kind)
 	}
 	m.handleEvent(client.Event{Msg: protocol.Subscribed{UserList: []protocol.ChannelUser{
 		{UserID: 1, Username: "Zed"},
@@ -424,7 +365,7 @@ func TestMentionRingsBell(t *testing.T) {
 	if bell.String() != "\a" {
 		t.Errorf("bell = %q, want one BEL for a mention", bell.String())
 	}
-	if !m.items[0].mention {
+	if !rows(m)[0].Mention {
 		t.Error("mention row not flagged")
 	}
 	bell.Reset()
@@ -439,14 +380,14 @@ func TestMentionRingsBell(t *testing.T) {
 	if bell.Len() != 0 {
 		t.Error("a backfilled mention must not ring")
 	}
-	if !m.items[2].mention {
+	if !rows(m)[2].Mention {
 		t.Error("a backfilled mention should still be highlighted")
 	}
 	m.handleEvent(client.Event{Msg: protocol.Message{Name: "directMessage",
 		Username: "Me", Message: "echo of my own dm"}})
 	m.handleEvent(client.Event{Msg: protocol.Message{Name: "message",
 		Username: "bob", Message: "unrelated", Mentions: []string{"@!me", "@meh"}}})
-	if bell.Len() != 0 || m.items[3].mention || m.items[4].mention {
+	if bell.Len() != 0 || rows(m)[3].Mention || rows(m)[4].Mention {
 		t.Error("self echo, group mentions and other names must neither ring nor highlight")
 	}
 
@@ -456,100 +397,37 @@ func TestMentionRingsBell(t *testing.T) {
 	if bell.Len() != 0 {
 		t.Error("-quiet must silence the bell")
 	}
-	if !m.items[5].mention {
+	if !rows(m)[5].Mention {
 		t.Error("-quiet must keep the highlight")
 	}
 }
 
+// TestTimestampToggle: ctrl+t drives the transcript's timestamp option.
 func TestTimestampToggle(t *testing.T) {
-	m := newModel()
+	m := sized(newModel(), 80, 24)
 	at := time.Date(2026, 9, 2, 13, 5, 0, 0, time.Local)
 	m.handleEvent(client.Event{Msg: protocol.Message{Name: "message",
 		Username: "bob", Message: "hi", ServerTime: at.UnixMilli()}})
-	if got := plain(m.renderItem(m.items[0])); got != "<bob> hi" {
-		t.Errorf("row without times = %q", got)
+	if v := plain(m.content()); !strings.Contains(v, "<bob> hi") || strings.Contains(v, "13:05") {
+		t.Errorf("screen without times = %q", v)
 	}
-	next, _ := m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-	m = next.(Model)
-	if got := plain(m.renderItem(m.items[0])); got != "13:05 <bob> hi" {
-		t.Errorf("row with times = %q", got)
-	}
-}
-
-// spoilerModel is a sized model whose transcript is 40 spoilers long
-// enough to wrap to several lines once revealed, so a toggle changes
-// the height of every row above the reader.
-func spoilerModel() Model {
-	m := sized(newModel(), 40, 12)
-	for i := 0; i < 40; i++ {
-		m.pushMessage(protocol.Message{
-			Name: "message", Username: "bob", IsSpoiler: true,
-			Message: fmt.Sprintf("row %d %s", i, strings.Repeat("x", 100)),
-		}, false)
-	}
-	return m
-}
-
-// TestToggleKeepsRowUnderTop: ctrl+s and ctrl+t used to rebuild the
-// viewport and jump to the bottom, so revealing a spoiler while
-// reading back lost the place. The re-render must keep the same row
-// at the top of the screen even though every row changed height.
-func TestToggleKeepsRowUnderTop(t *testing.T) {
-	m := spoilerModel()
-	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
-	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
-	if m.vp.AtBottom() {
-		t.Fatal("pgup should have left the viewport scrolled up")
-	}
-	want := m.locate().item
-	linesHidden := m.vp.TotalLineCount()
-
-	for _, key := range []tea.KeyPressMsg{
-		{Code: 's', Mod: tea.ModCtrl}, // reveal: rows grow
-		{Code: 't', Mod: tea.ModCtrl}, // times: rows shift
-		{Code: 's', Mod: tea.ModCtrl}, // hide again: rows shrink
-	} {
-		m = press(m, key)
-		if m.vp.AtBottom() {
-			t.Fatalf("%s jumped to the bottom", key)
-		}
-		if got := m.locate().item; got != want {
-			t.Errorf("after %s the row under the top is %d, want %d", key, got, want)
-		}
-	}
-	m = press(m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if m.vp.TotalLineCount() == linesHidden {
-		t.Fatal("setup: revealing the spoilers did not change the line count")
+	m = press(m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	if v := plain(m.content()); !strings.Contains(v, "13:05 <bob> hi") {
+		t.Errorf("screen with times = %q", v)
 	}
 }
 
-// TestToggleAtBottomStaysAtBottom: a reader following the newest
-// message keeps following it through a toggle, however the heights
-// change.
-func TestToggleAtBottomStaysAtBottom(t *testing.T) {
-	m := spoilerModel()
-	m = press(m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
-	if !m.vp.AtBottom() {
-		t.Error("revealing spoilers while at the bottom scrolled up")
-	}
-}
-
-// TestPushTrimKeepsRowUnderTop: when the transcript cap drops the
-// oldest rows the anchored row moves up the slice; the reader must
-// stay on it rather than slide by however many rows fell off.
-func TestPushTrimKeepsRowUnderTop(t *testing.T) {
+// TestSpoilerToggle: ctrl+s drives the transcript's reveal option.
+func TestSpoilerToggle(t *testing.T) {
 	m := sized(newModel(), 80, 24)
-	for i := 0; i < maxItems-1; i++ {
-		m.items = append(m.items, item{kind: "event", text: fmt.Sprint(i), at: time.Now()})
+	m.handleEvent(client.Event{Msg: protocol.Message{Name: "message",
+		Username: "bob", Message: "the butler did it", IsSpoiler: true}})
+	if v := plain(m.content()); strings.Contains(v, "butler") {
+		t.Errorf("spoiler text leaked while hidden: %q", v)
 	}
-	m.refresh(anchor{bottom: true})
-	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
-	before := m.items[m.locate().item].text
-	for i := 0; i < 5; i++ { // the last four each drop one row
-		m.push(item{kind: "event", text: "new"})
-	}
-	if after := m.items[m.locate().item].text; after != before {
-		t.Errorf("row under the top = %q after the trim, want %q", after, before)
+	m = press(m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if v := plain(m.content()); !strings.Contains(v, "the butler did it") {
+		t.Errorf("screen after ctrl+s = %q", v)
 	}
 }
 
@@ -560,26 +438,26 @@ func TestTypingResumesFollowing(t *testing.T) {
 	m, conn := completionModel()
 	m = sized(m, 80, 24)
 	for i := 0; i < 60; i++ {
-		m.push(item{kind: "event", text: fmt.Sprint(i)})
+		m.pushEvent(fmt.Sprint(i), 0)
 	}
 	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
-	m.push(item{kind: "event", text: "later"})
-	if m.vp.AtBottom() {
+	m.pushEvent("later", 0)
+	if m.tr.Following() {
 		t.Fatal("a new row yanked the scrolled-up reader")
 	}
 	m = press(m, tea.KeyPressMsg{Code: tea.KeyLeft})
-	if m.vp.AtBottom() {
+	if m.tr.Following() {
 		t.Error("a cursor move resumed following")
 	}
 	m = typeText(m, "h")
-	if !m.vp.AtBottom() {
+	if !m.tr.Following() {
 		t.Error("typing did not resume following")
 	}
 
 	m = typeText(m, "i")
 	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	m = keyEnterC(m)
-	if !m.vp.AtBottom() {
+	if !m.tr.Following() {
 		t.Error("sending did not resume following")
 	}
 	if !slices.Equal(conn.sent, []string{"hi"}) {
@@ -594,7 +472,7 @@ func TestScrolledUpBanner(t *testing.T) {
 	m, _ := completionModel()
 	m = sized(m, 80, 24)
 	for i := 0; i < 60; i++ {
-		m.push(item{kind: "event", text: fmt.Sprint(i)})
+		m.pushEvent(fmt.Sprint(i), 0)
 	}
 	lastRow := func(m Model) string {
 		rows := strings.Split(plain(m.content()), "\n")
@@ -611,7 +489,7 @@ func TestScrolledUpBanner(t *testing.T) {
 		t.Errorf("screen is %d rows with the banner, want 24", rows)
 	}
 	m = press(m, tea.KeyPressMsg{Code: tea.KeyEnd})
-	if !m.vp.AtBottom() {
+	if !m.tr.Following() {
 		t.Error("end did not jump to the bottom")
 	}
 	if !strings.Contains(lastRow(m), "enter send") {
@@ -644,19 +522,6 @@ func TestEscDoesNotQuit(t *testing.T) {
 	}
 }
 
-func TestTranscriptCap(t *testing.T) {
-	m := newModel()
-	for i := 0; i < maxItems+50; i++ {
-		m.push(item{kind: "event", text: fmt.Sprint(i)})
-	}
-	if len(m.items) != maxItems {
-		t.Fatalf("items = %d, want %d", len(m.items), maxItems)
-	}
-	if m.items[0].text != "50" {
-		t.Errorf("oldest kept = %q, want the 51st pushed", m.items[0].text)
-	}
-}
-
 // TestNoticesShownOncePerRun: the server resends its whole away-inbox on
 // every subscribe, so only the first one replays it, newest maxNotices
 // rows, oldest first.
@@ -670,11 +535,11 @@ func TestNoticesShownOncePerRun(t *testing.T) {
 	}
 	notes[0].MessageType = "modDirectMessage"
 	m.handleEvent(client.Event{Msg: protocol.Subscribed{Notifications: notes}})
-	if len(m.items) != maxNotices {
-		t.Fatalf("rows = %d, want %d", len(m.items), maxNotices)
+	if len(rows(m)) != maxNotices {
+		t.Fatalf("rows = %d, want %d", len(rows(m)), maxNotices)
 	}
-	first := plain(m.renderItem(m.items[0]))
-	last := plain(m.renderItem(m.items[maxNotices-1]))
+	first := rowText(m, 0)
+	last := rowText(m, maxNotices-1)
 	if first != "while you were away · ann: n9" {
 		t.Errorf("first row = %q, want the oldest of the newest ten", first)
 	}
@@ -682,17 +547,18 @@ func TestNoticesShownOncePerRun(t *testing.T) {
 		t.Errorf("last row = %q", last)
 	}
 	m.handleEvent(client.Event{Msg: protocol.Subscribed{Notifications: notes}})
-	if len(m.items) != maxNotices {
-		t.Errorf("a reconnect replayed the inbox again: %d rows", len(m.items))
+	if len(rows(m)) != maxNotices {
+		t.Errorf("a reconnect replayed the inbox again: %d rows", len(rows(m)))
 	}
 }
 
-// TestNetworkTextCannotDriveTheTerminal: usernames, close reasons and
-// server messages bypass the HTML renderer, so they get the same
-// control stripping on their own way to the screen.
+// TestNetworkTextCannotDriveTheTerminal: close reasons, server
+// messages and the names in event rows bypass the HTML renderer, so
+// the model strips controls before they reach a row's Text; the
+// transcript package covers the fields it sanitizes itself.
 func TestNetworkTextCannotDriveTheTerminal(t *testing.T) {
 	const evil = "bob\x1b[2J\x1b]52;c;xxx\x07\nmallory"
-	m := newModel()
+	m := sized(newModel(), 200, 40)
 	m.handleEvent(client.Event{State: client.StateOnline,
 		Msg: protocol.UserJoined{UserID: 1, Username: evil}})
 	m.handleEvent(client.Event{State: client.StateOnline,
@@ -708,14 +574,16 @@ func TestNetworkTextCannotDriveTheTerminal(t *testing.T) {
 		Msg: protocol.Error{Message: evil}})
 	m.handleEvent(client.Event{State: client.StateOnline,
 		Msg: protocol.Away{UserID: 1, Username: evil, IsAway: true}})
-	if len(m.items) != 6 {
-		t.Fatalf("got %d rows, want 6", len(m.items))
+	if len(rows(m)) != 6 {
+		t.Fatalf("got %d rows, want 6", len(rows(m)))
 	}
-	for _, it := range m.items {
-		got := m.renderItem(it)
-		if p := plain(got); strings.ContainsAny(p, "\x1b\x07\n") {
-			t.Errorf("%s row %q carries a control or a forged line", it.kind, got)
+	for i, r := range rows(m) {
+		if p := plain(r.Text); strings.ContainsAny(p, "\x1b\x07\n") {
+			t.Errorf("row %d text %q carries a control or a forged line", i, r.Text)
 		}
+	}
+	if v := plain(m.tr.View()); strings.ContainsAny(v, "\x1b\x07") {
+		t.Errorf("the drawn transcript carries a control: %q", v)
 	}
 	m.handleEvent(client.Event{State: client.StateStopped,
 		Err: errors.New(evil)})
@@ -849,11 +717,6 @@ func TestStylesFollowTheme(t *testing.T) {
 	first := strings.SplitN(m.View().Content, "\n", 2)[0]
 	if !strings.Contains(first, "38;2;235;117;34") {
 		t.Errorf("status bar does not carry classic primary #eb7522: %q", first)
-	}
-	m.pushMessage(protocol.Message{Username: "bob", Message: "hi"}, false)
-	row := m.renderItem(m.items[0])
-	if !strings.Contains(row, "38;2;238;178;17") {
-		t.Errorf("username does not carry classic username #eeb211: %q", row)
 	}
 }
 
@@ -1089,12 +952,12 @@ func TestCompletionEnterNeverSends(t *testing.T) {
 func TestCompletionResizesViewport(t *testing.T) {
 	m, _ := completionModel()
 	m = sized(m, 80, 24)
-	if h := m.vp.Height(); h != 21 {
+	if h := m.tr.Height(); h != 21 {
 		t.Fatalf("closed viewport height = %d, want 21", h)
 	}
 
 	m = typeText(m, "@ali") // alice, alicia: 2 candidates
-	if h := m.vp.Height(); h != 18 {
+	if h := m.tr.Height(); h != 18 {
 		t.Errorf("viewport height with 2 candidates = %d, want 18", h)
 	}
 
@@ -1103,12 +966,12 @@ func TestCompletionResizesViewport(t *testing.T) {
 	if got := len(m.completion.res.Candidates); got != 7 {
 		t.Fatalf("candidates for an empty term = %d, want 7", got)
 	}
-	if h := m.vp.Height(); h != 15 {
+	if h := m.tr.Height(); h != 15 {
 		t.Errorf("viewport height with 7 candidates (5 shown) = %d, want 15", h)
 	}
 
 	m = keyEsc(m)
-	if h := m.vp.Height(); h != 21 {
+	if h := m.tr.Height(); h != 21 {
 		t.Errorf("closing did not restore the viewport height: got %d, want 21", h)
 	}
 }
@@ -1121,49 +984,19 @@ func TestCompletionPreservesScrollPosition(t *testing.T) {
 	m, _ := completionModel()
 	m = sized(m, 80, 24)
 	for i := 0; i < 60; i++ {
-		m.push(item{kind: "event", text: fmt.Sprint(i)})
+		m.pushEvent(fmt.Sprint(i), 0)
 	}
 	m = typeText(m, "@ali") // opens with 2 candidates, shrinking the viewport
 	if m.completion == nil {
 		t.Fatal("completion did not open")
 	}
 	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
-	if m.vp.AtBottom() {
+	if m.tr.Following() {
 		t.Fatal("pgup should have left the viewport scrolled up")
 	}
-	before := m.vp.YOffset()
-
 	m = keyEsc(m) // closes the list, growing the viewport back
-	if after := m.vp.YOffset(); after != before {
-		t.Errorf("YOffset moved from %d to %d; closing the list scrolled the reader", before, after)
-	}
-}
-
-// TestCompletionCloseReclampsPastBottom: viewport.SetHeight (bubbles
-// v2.2.1) does not reclamp yOffset on its own, so growing the viewport
-// back when the list closes could leave it referencing rows past the
-// end of the content — relayout must notice and snap back to the
-// bottom rather than draw blank filler there.
-func TestCompletionCloseReclampsPastBottom(t *testing.T) {
-	m, _ := completionModel()
-	m = sized(m, 80, 24)
-	for i := 0; i < 30; i++ {
-		m.push(item{kind: "event", text: fmt.Sprint(i)})
-	}
-	m = typeText(m, "@ali") // opens the list, shrinking the viewport
-	if m.completion == nil {
-		t.Fatal("completion did not open")
-	}
-	m.vp.GotoBottom()
-	m.vp.SetYOffset(m.vp.YOffset() - 1) // scroll up exactly one line
-	if m.vp.AtBottom() {
-		t.Fatal("setup: expected to be scrolled one line above the bottom")
-	}
-
-	m = keyEsc(m) // closes the list, growing the viewport back
-	if m.vp.PastBottom() {
-		t.Errorf("closing the list left the viewport past the bottom (yOffset %d, height %d)",
-			m.vp.YOffset(), m.vp.Height())
+	if m.tr.Following() {
+		t.Error("closing the list scrolled the reader to the bottom")
 	}
 }
 
@@ -1262,9 +1095,9 @@ func TestCompletionHelpLineAndRows(t *testing.T) {
 	if highlightLine == "" {
 		t.Fatal("could not find the alice row in the raw view")
 	}
-	if w := lipgloss.Width(highlightLine); w != m.vp.Width() {
+	if w := lipgloss.Width(highlightLine); w != m.width {
 		t.Errorf("highlighted row width = %d, want %d (padded to the viewport width)",
-			w, m.vp.Width())
+			w, m.width)
 	}
 
 	m = keyEsc(m)
@@ -1304,10 +1137,10 @@ func TestNoConnPushesNotConnected(t *testing.T) {
 	m = sized(m, 80, 24)
 	m = typeText(m, "hello")
 	m = keyEnterC(m)
-	if len(m.items) != 1 {
-		t.Fatalf("items = %+v, want one send-failed row", m.items)
+	if len(rows(m)) != 1 || rows(m)[0].Kind != transcript.Error {
+		t.Fatalf("rows = %+v, want one send-failed row", rows(m))
 	}
-	if got := plain(m.renderItem(m.items[0])); got != "send failed: not connected" {
+	if got := rowText(m, 0); got != "send failed: not connected" {
 		t.Errorf("row = %q, want the not-connected message", got)
 	}
 }
@@ -1462,11 +1295,11 @@ func TestAcceptCompletionRespectsCharLimit(t *testing.T) {
 	if conn.typingNotices != 0 {
 		t.Errorf("typing notices = %d, want 0 (the accept was refused)", conn.typingNotices)
 	}
-	if len(m.items) != 1 {
-		t.Fatalf("items = %+v, want one error row", m.items)
+	if len(rows(m)) != 1 || rows(m)[0].Kind != transcript.Error {
+		t.Fatalf("rows = %+v, want one error row", rows(m))
 	}
 	want := fmt.Sprintf("completion would exceed the %d-character limit", limit)
-	if got := plain(m.renderItem(m.items[0])); got != want {
+	if got := rowText(m, 0); got != want {
 		t.Errorf("row = %q, want %q", got, want)
 	}
 
@@ -1860,13 +1693,13 @@ func TestCommandCompletionWhoAcceptedIsHandledLocally(t *testing.T) {
 		t.Fatalf("value after accept = %q, want %q", got, want)
 	}
 
-	before := len(m.items)
+	before := len(rows(m))
 	m = keyEnterC(m)
 	if len(conn.sent) != 0 {
 		t.Errorf("sent = %v, want nothing: /who is handled locally", conn.sent)
 	}
-	if len(m.items) != before+1 {
-		t.Fatalf("items after /who = %d, want %d (one roster row)", len(m.items), before+1)
+	if len(rows(m)) != before+1 {
+		t.Fatalf("rows after /who = %d, want %d (one roster row)", len(rows(m)), before+1)
 	}
 }
 

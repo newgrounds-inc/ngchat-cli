@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/textinput"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	xansi "github.com/charmbracelet/x/ansi"
@@ -26,14 +25,11 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/render"
 	"github.com/newgrounds-inc/ngchat-cli/internal/splash"
 	"github.com/newgrounds-inc/ngchat-cli/internal/theme"
+	"github.com/newgrounds-inc/ngchat-cli/internal/transcript"
 )
 
 const (
 	maxMessageLength = 5000 // server-side limit per chat message
-	// maxItems caps the transcript. The viewport re-renders every row on
-	// each change, so an evening of chat must not grow without bound; the
-	// oldest rows are dropped first, the same loss a reconnect gap is.
-	maxItems = 2000
 	// maxNotices bounds how much of the server's away-inbox is replayed
 	// on the first subscribe. The inbox holds up to 100 rows and the
 	// server never clears it, so showing all of it would bury the live
@@ -51,57 +47,34 @@ const (
 	maxSplash = 4 * time.Second
 )
 
-// styles is every lipgloss style the screen uses, built once from the
-// theme. Widgets name a role (user, mod, mention), never a color, so a
-// theme swap touches nothing below this.
+// styles is every lipgloss style the chrome around the transcript uses,
+// built once from the theme. Widgets name a role, never a color, so a
+// theme swap touches nothing below this. The transcript's own rows are
+// styled by internal/transcript from the same theme.
 type styles struct {
-	status, user, modUser, self, mention, dm, event, spoiler, err,
-	help, time, away, pick lipgloss.Style
+	status, event, help, away, pick lipgloss.Style
 }
 
-// newStyles maps theme roles onto the transcript. The status bar and
-// the mention highlight carry Reverse on top of their colors: under
-// NO_COLOR the renderer drops the colors but keeps the attribute, so
-// both still read as a bar. (TERM=dumb is the NoTTY profile, which
-// drops every attribute too; there they are plain text.) Reverse swaps
-// foreground and background, so those two pairs are declared swapped.
+// newStyles maps theme roles onto the chrome. The status bar carries
+// Reverse on top of its colors: under NO_COLOR the renderer drops the
+// colors but keeps the attribute, so it still reads as a bar.
+// (TERM=dumb is the NoTTY profile, which drops every attribute too;
+// there it is plain text.) Reverse swaps foreground and background, so
+// the pair is declared swapped.
 func newStyles(t theme.Theme) styles {
 	faint := lipgloss.NewStyle().Faint(true)
 	return styles{
 		status: lipgloss.NewStyle().Reverse(true).Padding(0, 1).
 			Foreground(t.Primary).Background(t.PrimaryContent),
-		user:    lipgloss.NewStyle().Bold(true).Foreground(t.Username),
-		modUser: lipgloss.NewStyle().Bold(true).Foreground(t.Secondary),
-		// Self is the one cool color in a warm transcript, so your own
-		// lines are found at a glance.
-		self: lipgloss.NewStyle().Bold(true).Foreground(t.Info),
-		mention: lipgloss.NewStyle().Bold(true).Reverse(true).
-			Foreground(t.Warning).Background(t.WarningContent),
-		dm:      lipgloss.NewStyle().Bold(true).Foreground(t.Accent),
-		event:   faint.Italic(true),
-		spoiler: faint,
-		err:     lipgloss.NewStyle().Foreground(t.Error),
-		help:    faint,
-		time:    faint,
-		away:    faint,
+		event: faint.Italic(true),
+		help:  faint,
+		away:  faint,
 		// pick highlights the selected completion row the same way the
 		// status bar reads as a bar under NO_COLOR: color plus Reverse,
 		// so the attribute survives where the color does not.
 		pick: lipgloss.NewStyle().Reverse(true).
 			Foreground(t.Primary).Background(t.PrimaryContent),
 	}
-}
-
-// item is one rendered row of the transcript.
-type item struct {
-	kind     string // "chat", "me", "slap", "server", "dm", "event", "gap"
-	username string
-	isMod    bool
-	html     string // server-rendered HTML, converted lazily on render
-	spoiler  bool
-	mention  bool   // addressed to self: highlighted, and rang the bell
-	text     string // pre-rendered text for non-chat rows
-	at       time.Time
 }
 
 // typingState remembers who is composing and when they last said so.
@@ -184,17 +157,11 @@ type Model struct {
 	// fixed list back every time.
 	sources []complete.Source
 
-	items []item
-	// starts is the viewport line each transcript row begins on, as
-	// of the last refresh, so a re-render can find the row under the
-	// top of the screen and put it back there.
-	starts         []int
-	revealSpoilers bool
-	showTimes      bool
-	state          client.State
-	stopErr        error
-	retryErr       error // why the last session ended, while reconnecting
-	self           string
+	tr       transcript.Transcript
+	state    client.State
+	stopErr  error
+	retryErr error // why the last session ended, while reconnecting
+	self     string
 	// isAdmin and isChatMod gate the command completion list; both are
 	// set from Authenticated and kept current by Revalidated, since a
 	// renewal's flags supersede the ones the session started with.
@@ -208,8 +175,9 @@ type Model struct {
 	// away-inbox; reconnects carry the same rows again and must not.
 	noticed bool
 
-	vp    viewport.Model
 	input textinput.Model
+	// ready is set by the first WindowSizeMsg; until then there is no
+	// layout to draw.
 	ready bool
 
 	st            styles
@@ -237,6 +205,7 @@ func New(chat *client.Client, opts Options) Model {
 		typing:  map[string]typingState{},
 		users:   map[int]protocol.ChannelUser{},
 		st:      newStyles(th),
+		tr:      transcript.New(th),
 	}
 	// A nil *client.Client stored in the chatConn interface would not
 	// compare equal to nil (a typed nil is a non-nil interface), so the
@@ -334,25 +303,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// fired for it. Consume it as a true no-op instead.
 			return m, nil
 		case "ctrl+s":
-			m.revealSpoilers = !m.revealSpoilers
-			m.refresh(m.locate())
+			o := m.tr.Options()
+			o.RevealSpoilers = !o.RevealSpoilers
+			m.tr.SetOptions(o)
 			return m, nil
 		case "ctrl+t":
-			m.showTimes = !m.showTimes
-			m.refresh(m.locate())
+			o := m.tr.Options()
+			o.ShowTimes = !o.ShowTimes
+			m.tr.SetOptions(o)
 			return m, nil
-		case "pgup", "pgdown":
-			// Only the paging keys reach the viewport: its default keymap
-			// also binds letters, which belong to the input line.
-			var cmd tea.Cmd
-			m.vp, cmd = m.vp.Update(msg)
-			return m, cmd
+		case "pgup":
+			m.tr.PageUp()
+			return m, nil
+		case "pgdown":
+			m.tr.PageDown()
+			return m, nil
 		case "end":
 			// The jump the "more messages below" banner advertises.
 			// At the bottom already there is nothing to jump to, so the
 			// key keeps its textinput meaning (cursor to end of line).
-			if !m.vp.AtBottom() {
-				m.vp.GotoBottom()
+			if !m.tr.Following() {
+				m.tr.Follow()
 				return m, nil
 			}
 		case "enter":
@@ -361,25 +332,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if isWho(text) {
-				m.push(item{kind: "event", text: m.whoText()})
+				m.pushWho()
 				m.input.Reset()
 				m.recompute()
 				return m, nil
 			}
 			if m.conn == nil {
-				m.push(item{kind: "event",
-					text: m.st.err.Render("send failed: not connected")})
+				m.pushError("send failed: not connected")
 				return m, nil
 			}
 			if err := m.conn.SendChat(text); err != nil {
-				m.push(item{kind: "event",
-					text: m.st.err.Render("send failed: " + err.Error())})
+				m.pushError("send failed: " + err.Error())
 				return m, nil
 			}
 			m.input.Reset()
 			// Sending resumes following, as on the web: the reply is
 			// about to land at the bottom and the sender wants to see it.
-			m.vp.GotoBottom()
+			m.tr.Follow()
 			m.recompute()
 			return m, nil
 		}
@@ -390,7 +359,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Typing while scrolled up means the reader is done
 			// reading back; jump to where the conversation is. Cursor
 			// moves alone do not count.
-			m.vp.GotoBottom()
+			m.tr.Follow()
 		}
 		if m.conn != nil && m.input.Value() != "" {
 			m.conn.SendTyping()
@@ -448,7 +417,7 @@ func (m Model) splashOver() bool {
 // current underneath all along.
 func (m *Model) endSplash() {
 	m.splash = nil
-	m.refresh(anchor{bottom: true})
+	m.tr.Follow()
 }
 
 // SignedOut reports whether the client stopped because the site refused
@@ -491,13 +460,13 @@ func (m *Model) handleEvent(e client.Event) {
 		// The status bar is one truncated line; the transcript row is
 		// where the full reason can be read.
 		if e.Err != nil {
-			m.pushEvent(m.st.err.Render("disconnected: "+render.Line(e.Err.Error())), 0)
+			m.pushError("disconnected: " + render.Line(e.Err.Error()))
 		}
 	case client.StateReconnecting:
 		m.retryErr = e.Err
 	}
 	if e.Gap {
-		m.push(item{kind: "gap", at: time.Now()})
+		m.tr.Append(transcript.Row{Kind: transcript.Gap, At: time.Now()})
 	}
 	switch msg := e.Msg.(type) {
 	case protocol.Authenticated:
@@ -509,7 +478,7 @@ func (m *Model) handleEvent(e client.Event) {
 		// Below the history so it is the first thing read on join, like
 		// the site's banner, rather than scrolled off by the backfill.
 		if m.motd != "" {
-			m.pushEvent(m.st.event.Render(render.Text(m.motd)), 0)
+			m.pushEvent(render.Text(m.motd), 0)
 		}
 	case protocol.Subscribed:
 		m.users = make(map[int]protocol.ChannelUser, len(msg.UserList))
@@ -528,14 +497,14 @@ func (m *Model) handleEvent(e client.Event) {
 		}
 	case protocol.UserJoined:
 		m.users[msg.UserID] = rosterEntry(msg)
-		m.pushEvent(m.st.event.Render(render.Line(msg.Username)+" joined"), msg.ServerTime)
+		m.pushEvent(render.Line(msg.Username)+" joined", msg.ServerTime)
 	case protocol.UserUpdated:
 		// A silent roster patch: never a join notice (ADR 0002 drift note
 		// on the upstream schema).
 		m.users[msg.UserID] = rosterEntry(protocol.UserJoined(msg))
 	case protocol.UserLeft:
 		delete(m.users, msg.UserID)
-		m.pushEvent(m.st.event.Render(render.Line(msg.Username)+" left"), msg.ServerTime)
+		m.pushEvent(render.Line(msg.Username)+" left", msg.ServerTime)
 		delete(m.typing, render.Line(msg.Username))
 	case protocol.Away:
 		u, known := m.users[msg.UserID]
@@ -547,7 +516,7 @@ func (m *Model) handleEvent(e client.Event) {
 		u.AwayMessage = msg.AwayMessage
 		u.AwayMessageRaw = msg.AwayMessageRaw
 		m.users[msg.UserID] = u
-		m.pushEvent(m.awayText(msg), msg.ServerTime)
+		m.pushEvent(awayText(msg), msg.ServerTime)
 	case protocol.Revalidated:
 		// The socket renewed its token in place; the flags on this
 		// message now describe self. They matter for the command
@@ -557,15 +526,14 @@ func (m *Model) handleEvent(e client.Event) {
 		m.isAdmin = msg.IsAdmin
 		m.isChatMod = msg.IsChatMod
 	case client.RenewalFailed:
-		m.pushEvent(m.st.event.Render(
-			"token renewal failed ("+render.Line(msg.Err.Error())+
-				"); will reconnect when the current token expires"), 0)
+		m.pushEvent("token renewal failed ("+render.Line(msg.Err.Error())+
+			"); will reconnect when the current token expires", 0)
 	case protocol.Unauthorized:
 		// Only reaches the UI after authentication, right before the
 		// server closes the socket (expiry or a rejected renewal).
-		m.pushEvent(m.st.event.Render(render.Line(msg.Message)), 0)
+		m.pushEvent(render.Line(msg.Message), 0)
 	case protocol.Error:
-		m.pushEvent(m.st.err.Render(render.Line(msg.Message)), 0)
+		m.pushError(render.Line(msg.Message))
 	}
 }
 
@@ -589,15 +557,15 @@ func rosterEntry(u protocol.UserJoined) protocol.ChannelUser {
 // stepped away from chat: lunch", "bob is back."), so it is shown as
 // is, like the web client does; the fallback phrasing is the web
 // client's for a frame that carries none.
-func (m Model) awayText(a protocol.Away) string {
+func awayText(a protocol.Away) string {
 	if a.AwayMessage != "" {
-		return m.st.event.Render(render.Text(a.AwayMessage))
+		return render.Text(a.AwayMessage)
 	}
 	name := render.Line(a.Username)
 	if !a.IsAway {
-		return m.st.event.Render(name + " is back.")
+		return name + " is back."
 	}
-	return m.st.event.Render(name + " has stepped away from chat.")
+	return name + " has stepped away from chat."
 }
 
 // pushNotices replays the newest rows of the away-inbox, oldest first so
@@ -616,14 +584,19 @@ func (m *Model) pushNotices(notes []protocol.Notification) {
 		if n.MessageType == "directMessage" || n.MessageType == "modDirectMessage" {
 			label = "while you were away · [DM] " + who + ": "
 		}
-		m.pushEvent(m.st.event.Render(label+render.Text(n.Message)), n.ServerTime)
+		m.pushEvent(label+render.Text(n.Message), n.ServerTime)
 	}
 }
 
-// pushEvent appends a pre-rendered event row stamped with the server's
-// time, or now when the frame carries none.
+// pushEvent appends an event row stamped with the server's time, or
+// now when the frame carries none. text is already sanitized.
 func (m *Model) pushEvent(text string, serverTime int64) {
-	m.push(item{kind: "event", text: text, at: stamp(serverTime)})
+	m.tr.Append(transcript.Row{Kind: transcript.Event, Text: text, At: stamp(serverTime)})
+}
+
+// pushError appends a row for something that failed, stamped now.
+func (m *Model) pushError(text string) {
+	m.tr.Append(transcript.Row{Kind: transcript.Error, Text: text, At: time.Now()})
 }
 
 // stamp converts a server millisecond timestamp, falling back to now.
@@ -634,34 +607,35 @@ func stamp(serverTime int64) time.Time {
 	return time.UnixMilli(serverTime)
 }
 
-// pushMessage classifies a wire message into a transcript item. A message
+// pushMessage classifies a wire message into a transcript row. A message
 // addressed to self is highlighted; a live one also rings the bell, while
 // a backfilled one does not, since it is old news every reconnect.
 func (m *Model) pushMessage(msg protocol.Message, backfill bool) {
-	kind := "chat"
+	kind := transcript.Chat
 	switch msg.Name {
 	case "meMessage":
-		kind = "me"
+		kind = transcript.Me
 	case "slapMessage":
-		kind = "slap"
+		kind = transcript.Slap
 	case "serverMessage":
-		kind = "server"
+		kind = transcript.Server
 	case "directMessage":
-		kind = "dm"
+		kind = transcript.DM
 	}
 	delete(m.typing, render.Line(msg.Username))
 	mention := m.addressedToMe(msg)
 	if mention && !backfill && !m.quiet {
 		_, _ = io.WriteString(m.bell, "\a")
 	}
-	m.push(item{
-		kind:     kind,
-		username: msg.Username,
-		isMod:    msg.IsAdmin || msg.IsChatMod,
-		html:     msg.Message,
-		spoiler:  msg.IsSpoiler,
-		mention:  mention,
-		at:       stamp(msg.ServerTime),
+	m.tr.Append(transcript.Row{
+		Kind:     kind,
+		Username: msg.Username,
+		Mod:      msg.IsAdmin || msg.IsChatMod,
+		Self:     msg.Username == m.self,
+		HTML:     msg.Message,
+		Spoiler:  msg.IsSpoiler,
+		Mention:  mention,
+		At:       stamp(msg.ServerTime),
 	})
 }
 
@@ -686,40 +660,15 @@ func (m *Model) addressedToMe(msg protocol.Message) bool {
 	return false
 }
 
-// push appends a transcript item and re-renders, following the bottom
-// unless the user has scrolled up.
-func (m *Model) push(it item) {
-	if it.at.IsZero() {
-		it.at = time.Now()
-	}
-	a := m.locate()
-	m.items = append(m.items, it)
-	if dropped := len(m.items) - maxItems; dropped > 0 {
-		m.items = m.items[dropped:]
-		// The anchored row moved up the slice with everything else;
-		// one that fell off the cap leaves the reader on the new
-		// oldest row.
-		a.item = max(0, a.item-dropped)
-	}
-	m.refresh(a)
-}
-
 // layout applies terminal dimensions to the widgets. It also records
 // w and h on the model itself: listRows needs the current height even
 // when a test calls layout directly rather than through a
 // tea.WindowSizeMsg.
 func (m *Model) layout(w, h int) {
 	m.width, m.height = w, h
-	vh := m.viewportHeight()
-	if !m.ready {
-		m.vp = viewport.New(viewport.WithWidth(w), viewport.WithHeight(vh))
-		m.ready = true
-	} else {
-		m.vp.SetWidth(w)
-		m.vp.SetHeight(vh)
-	}
+	m.ready = true
+	m.tr.Resize(w, m.viewportHeight())
 	m.input.SetWidth(max(10, w-4))
-	m.refresh(m.locate())
 	// A resize can change listRows (more or fewer rows to spare) without
 	// the candidate count changing, which is exactly the case
 	// cycleCompletion's own window math never had to handle before: top
@@ -738,22 +687,14 @@ func (m Model) viewportHeight() int {
 	return max(1, m.height-chrome-m.listHeight())
 }
 
-// relayout resizes the viewport for the current completion state
-// without losing the reader's scroll position. Only the height
-// changes, so the content need not be rebuilt: SetHeight alone is
-// enough, except that it leaves the content unclamped, so GotoBottom
-// fires if the reader was already at the bottom — or if shrinking the
-// viewport left it scrolled past the bottom, which SetHeight does not
-// reclamp on its own (bubbles v2.2.1).
+// relayout resizes the transcript for the current completion state.
+// Only the height changes, which the transcript handles without
+// re-wrapping or losing the reader's place.
 func (m *Model) relayout() {
 	if !m.ready {
 		return
 	}
-	atBottom := m.vp.AtBottom()
-	m.vp.SetHeight(m.viewportHeight())
-	if atBottom || m.vp.PastBottom() {
-		m.vp.GotoBottom()
-	}
+	m.tr.Resize(m.width, m.viewportHeight())
 }
 
 // listRows is how many candidate rows the open completion list gets.
@@ -1081,8 +1022,8 @@ func (m *Model) acceptCompletion() {
 	if m.spliceExceedsLimit(cs.res.Start, cs.end, cand.Insert) {
 		m.completion = nil
 		m.relayout()
-		m.push(item{kind: "event", text: m.st.err.Render(fmt.Sprintf(
-			"completion would exceed the %d-character limit", m.input.CharLimit))})
+		m.pushError(fmt.Sprintf(
+			"completion would exceed the %d-character limit", m.input.CharLimit))
 		return
 	}
 	m.spliceValue(cs.res.Start, cs.end, cand.Insert)
@@ -1093,109 +1034,6 @@ func (m *Model) acceptCompletion() {
 	if m.conn != nil {
 		m.conn.SendTyping()
 	}
-}
-
-// anchor is where the reader is in the transcript, expressed in rows
-// rather than viewport lines: a re-render changes how many lines each
-// row takes (a spoiler revealed, timestamps added, a narrower wrap),
-// so a plain line offset would slide to a different row.
-type anchor struct {
-	// bottom means the reader is following the newest message and a
-	// re-render keeps them there; item and within are then unused.
-	bottom bool
-	// item is the transcript row under the top of the screen and
-	// within how many lines into it the screen starts.
-	item, within int
-}
-
-// locate reads the reader's anchor off the viewport as it stands. It
-// must run before the transcript or the widget changes; refresh takes
-// the result so the caller decides what the anchor was taken against
-// (push, for one, trims rows after it).
-func (m Model) locate() anchor {
-	if !m.ready || m.vp.AtBottom() || len(m.starts) == 0 {
-		return anchor{bottom: true}
-	}
-	y := m.vp.YOffset()
-	i := sort.Search(len(m.starts), func(i int) bool {
-		return m.starts[i] > y
-	}) - 1
-	if i < 0 {
-		return anchor{bottom: true}
-	}
-	return anchor{item: i, within: y - m.starts[i]}
-}
-
-// refresh rebuilds the viewport content from the transcript and puts
-// the reader back at a: the bottom, or the same row at the top of the
-// screen. within is clamped to the row's new height, so a row that
-// shrank (a spoiler hidden again) does not push the screen into the
-// row after it.
-func (m *Model) refresh(a anchor) {
-	if !m.ready {
-		return
-	}
-	var lines []string
-	starts := make([]int, len(m.items))
-	wrap := lipgloss.NewStyle().Width(m.vp.Width())
-	for i, it := range m.items {
-		starts[i] = len(lines)
-		lines = append(lines, strings.Split(wrap.Render(m.renderItem(it)), "\n")...)
-	}
-	m.starts = starts
-	m.vp.SetContent(strings.Join(lines, "\n"))
-	if a.bottom || a.item >= len(starts) {
-		m.vp.GotoBottom()
-		return
-	}
-	end := len(lines)
-	if a.item+1 < len(starts) {
-		end = starts[a.item+1]
-	}
-	within := min(a.within, end-starts[a.item]-1)
-	m.vp.SetYOffset(starts[a.item] + within)
-}
-
-// renderItem draws one transcript row.
-func (m *Model) renderItem(it item) string {
-	prefix := ""
-	if m.showTimes {
-		prefix = m.st.time.Render(it.at.Local().Format("15:04")) + " "
-	}
-	switch it.kind {
-	case "gap":
-		return prefix + m.st.event.Render("— reconnected, older messages missing —")
-	case "event", "server":
-		if it.text != "" {
-			return prefix + it.text
-		}
-		return prefix + m.st.event.Render(render.Text(it.html))
-	case "me", "slap":
-		// The server already leads the HTML with the actor's username
-		// ("bob waves"), as the web client relies on; only the "* "
-		// marker is ours.
-		return prefix + m.st.event.Render("* "+render.Text(it.html))
-	}
-
-	name := m.st.user
-	if it.isMod {
-		name = m.st.modUser
-	}
-	if it.username == m.self {
-		name = m.st.self
-	}
-	if it.mention {
-		name = m.st.mention
-	}
-	speaker := name.Render("<" + render.Line(it.username) + ">")
-	if it.kind == "dm" {
-		speaker = m.st.dm.Render("[DM] ") + speaker
-	}
-	body := render.Text(it.html)
-	if it.spoiler && !m.revealSpoilers {
-		body = m.st.spoiler.Render("▒▒▒ spoiler — ctrl+s to reveal ▒▒▒")
-	}
-	return prefix + speaker + " " + body
 }
 
 // View implements tea.Model. The alt screen is declared here rather
@@ -1223,11 +1061,11 @@ func (m Model) content() string {
 	}
 	// One line, always: a long stop reason would otherwise wrap the bar
 	// and push the layout off the bottom of the screen.
-	status = xansi.Truncate(status, max(0, m.vp.Width()-2), "…")
+	status = xansi.Truncate(status, max(0, m.width-2), "…")
 	help := m.helpLine()
 	rows := []string{
-		m.st.status.Width(m.vp.Width()).Render(status),
-		m.vp.View(),
+		m.st.status.Width(m.width).Render(status),
+		m.tr.View(),
 	}
 	if n := m.listRows(); n >= 1 {
 		rows = append(rows, m.completionView(n))
@@ -1246,8 +1084,8 @@ func (m Model) content() string {
 // terminal would otherwise wrap it into a second line and throw off
 // every row count above it.
 func (m Model) helpLine() string {
-	w := max(0, m.vp.Width())
-	if !m.vp.AtBottom() {
+	w := max(0, m.width)
+	if !m.tr.Following() {
 		banner := xansi.Truncate(" ↓ more messages below · end to jump", w, "…")
 		return m.st.status.Width(w).Render(banner)
 	}
@@ -1269,7 +1107,7 @@ func (m Model) helpLine() string {
 // completion pointer, so it does not clamp here too.
 func (m Model) completionView(n int) string {
 	cs := m.completion
-	w := m.vp.Width()
+	w := m.width
 	header := " tab/shift+tab next · enter accept · esc close"
 	if more := len(cs.res.Candidates) - (cs.top + n); more > 0 {
 		header += fmt.Sprintf(" · +%d more", more)
@@ -1335,12 +1173,19 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// whoText lists the roster on one wrapped row: sorted by name, mods
-// marked with @, away users dimmed with their away message.
-func (m Model) whoText() string {
+// pushWho answers a local /who with the roster as a row of its own,
+// or an event row when no roster has arrived yet.
+func (m *Model) pushWho() {
 	if len(m.users) == 0 {
-		return m.st.event.Render("no user list yet")
+		m.pushEvent("no user list yet", 0)
+		return
 	}
+	m.tr.Append(transcript.Row{Kind: transcript.Roster, Text: m.whoText(), At: time.Now()})
+}
+
+// whoText lists the roster sorted by name, mods marked with "@" and
+// away users dimmed with their away message.
+func (m Model) whoText() string {
 	users := make([]protocol.ChannelUser, 0, len(m.users))
 	for _, u := range m.users {
 		users = append(users, u)

@@ -4,24 +4,20 @@
 itself, which is how the network goroutine and the UI loop stay
 decoupled.
 
-## Transcript and reader position
+## Transcript
 
-Transcript rows keep the raw `html` and convert on render, so toggling
-spoilers (`ctrl+s`) re-renders from source. Scrollback is the
-viewport's, not the terminal's.
-
-A re-render (`refresh`) takes an `anchor` read off the viewport
-beforehand (`locate`): the bottom, or the row under the top of the
-screen plus lines into it. A toggle or a resize changes row heights, so
-a line offset alone would slide to a different row; `push` adjusts the
-anchor for rows the cap trimmed.
+The transcript is `internal/transcript` (`transcript.md`): the model
+classifies wire messages into rows (`pushMessage`, `pushEvent`,
+`pushError`, `pushWho`) and forwards the keys that read it. It never
+touches the viewport: `ctrl+s`/`ctrl+t` set options, `pgup`/`pgdown`
+page, and `end`, typing a character, or sending call `Follow`, as on
+the web. The transcript's `Resize` takes the height `viewportHeight`
+computes from the chrome and the open completion list.
 
 The web's "more messages below" control is the help row while the
-reader is scrolled up (`helpLine`), rather than a row of its own or an
-overlay: neither resizes the viewport under the reader nor covers a
-line they paged to. `end` jumps back when scrolled up and stays the
-composer's otherwise; typing a character or sending also resumes
-following, as on the web.
+reader is not following (`helpLine`), rather than a row of its own or
+an overlay: neither resizes the viewport under the reader nor covers a
+line they paged to.
 
 ## Splash
 
@@ -49,7 +45,9 @@ the line, trailing space trimmed, and accept adds it back.
 
 A resize reclamps the completion window (`clampWindow`) so a stale
 scroll position from before the resize cannot walk the list's row draw
-past the end of its candidates.
+past the end of its candidates. Opening or closing the list resizes
+the transcript by height only (`relayout`), which it handles without
+re-wrapping or losing the reader's place.
 
 `completionSources` builds the real source list fresh from the current
 `*Model` on every call rather than once in `New`, because `Model` is a
