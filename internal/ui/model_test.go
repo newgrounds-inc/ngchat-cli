@@ -476,6 +476,83 @@ func TestTimestampToggle(t *testing.T) {
 	}
 }
 
+// spoilerModel is a sized model whose transcript is 40 spoilers long
+// enough to wrap to several lines once revealed, so a toggle changes
+// the height of every row above the reader.
+func spoilerModel() Model {
+	m := sized(newModel(), 40, 12)
+	for i := 0; i < 40; i++ {
+		m.pushMessage(protocol.Message{
+			Name: "message", Username: "bob", IsSpoiler: true,
+			Message: fmt.Sprintf("row %d %s", i, strings.Repeat("x", 100)),
+		}, false)
+	}
+	return m
+}
+
+// TestToggleKeepsRowUnderTop: ctrl+s and ctrl+t used to rebuild the
+// viewport and jump to the bottom, so revealing a spoiler while
+// reading back lost the place. The re-render must keep the same row
+// at the top of the screen even though every row changed height.
+func TestToggleKeepsRowUnderTop(t *testing.T) {
+	m := spoilerModel()
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if m.vp.AtBottom() {
+		t.Fatal("pgup should have left the viewport scrolled up")
+	}
+	want := m.locate().item
+	linesHidden := m.vp.TotalLineCount()
+
+	for _, key := range []tea.KeyPressMsg{
+		{Code: 's', Mod: tea.ModCtrl}, // reveal: rows grow
+		{Code: 't', Mod: tea.ModCtrl}, // times: rows shift
+		{Code: 's', Mod: tea.ModCtrl}, // hide again: rows shrink
+	} {
+		m = press(m, key)
+		if m.vp.AtBottom() {
+			t.Fatalf("%s jumped to the bottom", key)
+		}
+		if got := m.locate().item; got != want {
+			t.Errorf("after %s the row under the top is %d, want %d", key, got, want)
+		}
+	}
+	m = press(m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if m.vp.TotalLineCount() == linesHidden {
+		t.Fatal("setup: revealing the spoilers did not change the line count")
+	}
+}
+
+// TestToggleAtBottomStaysAtBottom: a reader following the newest
+// message keeps following it through a toggle, however the heights
+// change.
+func TestToggleAtBottomStaysAtBottom(t *testing.T) {
+	m := spoilerModel()
+	m = press(m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if !m.vp.AtBottom() {
+		t.Error("revealing spoilers while at the bottom scrolled up")
+	}
+}
+
+// TestPushTrimKeepsRowUnderTop: when the transcript cap drops the
+// oldest rows the anchored row moves up the slice; the reader must
+// stay on it rather than slide by however many rows fell off.
+func TestPushTrimKeepsRowUnderTop(t *testing.T) {
+	m := sized(newModel(), 80, 24)
+	for i := 0; i < maxItems-1; i++ {
+		m.items = append(m.items, item{kind: "event", text: fmt.Sprint(i), at: time.Now()})
+	}
+	m.refresh(anchor{bottom: true})
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	before := m.items[m.locate().item].text
+	for i := 0; i < 5; i++ { // the last four each drop one row
+		m.push(item{kind: "event", text: "new"})
+	}
+	if after := m.items[m.locate().item].text; after != before {
+		t.Errorf("row under the top = %q after the trim, want %q", after, before)
+	}
+}
+
 // TestEscDoesNotQuit: esc used to end the program, which is far too easy
 // to hit by reflex from a modal editor.
 func TestEscDoesNotQuit(t *testing.T) {

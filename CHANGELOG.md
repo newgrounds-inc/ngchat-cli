@@ -110,6 +110,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   access denied instead of leaving the client idle.
 - Mentions render as `@name` with an https link instead of the raw
   markup.
+- `ctrl+s`, `ctrl+t` and a resize keep the reader's place in the
+  transcript instead of jumping to the bottom.
 
 ## [0.1.0] - 2026-08-13
 

@@ -247,7 +247,11 @@ function's control; eyeball `:woman_lifting_weights_tone1:` and
 the tea loop and reschedules itself, which is how the network goroutine and
 the UI loop stay decoupled. Transcript rows keep the raw `html` and convert
 on render, so toggling spoilers (`ctrl+s`) re-renders from source. Scrollback
-is the viewport's, not the terminal's. While `Model.splash` is non-nil
+is the viewport's, not the terminal's. A re-render (`refresh`) takes an
+`anchor` read off the viewport beforehand (`locate`): the bottom, or the
+row under the top of the screen plus lines into it, because a toggle or
+a resize changes row heights and a line offset alone would slide to a
+different row; `push` adjusts the anchor for rows the cap trimmed. While `Model.splash` is non-nil
 the view is the splash (centered frame, state label, skip hint) and
 the chat layout is kept current underneath; `frameMsg` ticks it at
 30 fps, and it ends when the effect is done and the client is online,

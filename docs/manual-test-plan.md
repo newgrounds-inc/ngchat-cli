@@ -129,6 +129,9 @@ screen or a reconnect loop.
       in the status bar and clears.
 - [ ] `pgup`/`pgdn` scroll the transcript; new messages while scrolled
       up do not yank the view.
+- [ ] Scrolled up next to a spoiler, `ctrl+s` and `ctrl+t` keep the
+      same row at the top of the screen (rows above grow or shrink; the
+      view does not jump to the bottom).
 - [ ] `ctrl+t` shows `HH:MM` local-time prefixes; toggles off again.
 - [ ] `esc` does nothing (it used to quit).
 - [ ] MOTD renders once below the backfill on join.

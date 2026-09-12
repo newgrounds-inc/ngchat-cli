@@ -184,7 +184,11 @@ type Model struct {
 	// fixed list back every time.
 	sources []complete.Source
 
-	items          []item
+	items []item
+	// starts is the viewport line each transcript row begins on, as
+	// of the last refresh, so a re-render can find the row under the
+	// top of the screen and put it back there.
+	starts         []int
 	revealSpoilers bool
 	showTimes      bool
 	state          client.State
@@ -331,11 +335,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+s":
 			m.revealSpoilers = !m.revealSpoilers
-			m.refresh(false)
+			m.refresh(m.locate())
 			return m, nil
 		case "ctrl+t":
 			m.showTimes = !m.showTimes
-			m.refresh(false)
+			m.refresh(m.locate())
 			return m, nil
 		case "pgup", "pgdown":
 			// Only the paging keys reach the viewport: its default keymap
@@ -426,7 +430,7 @@ func (m Model) splashOver() bool {
 // current underneath all along.
 func (m *Model) endSplash() {
 	m.splash = nil
-	m.refresh(false)
+	m.refresh(anchor{bottom: true})
 }
 
 // SignedOut reports whether the client stopped because the site refused
@@ -670,11 +674,16 @@ func (m *Model) push(it item) {
 	if it.at.IsZero() {
 		it.at = time.Now()
 	}
+	a := m.locate()
 	m.items = append(m.items, it)
-	if len(m.items) > maxItems {
-		m.items = m.items[len(m.items)-maxItems:]
+	if dropped := len(m.items) - maxItems; dropped > 0 {
+		m.items = m.items[dropped:]
+		// The anchored row moved up the slice with everything else;
+		// one that fell off the cap leaves the reader on the new
+		// oldest row.
+		a.item = max(0, a.item-dropped)
 	}
-	m.refresh(true)
+	m.refresh(a)
 }
 
 // layout applies terminal dimensions to the widgets. It also records
@@ -692,7 +701,7 @@ func (m *Model) layout(w, h int) {
 		m.vp.SetHeight(vh)
 	}
 	m.input.SetWidth(max(10, w-4))
-	m.refresh(false)
+	m.refresh(m.locate())
 	// A resize can change listRows (more or fewer rows to spare) without
 	// the candidate count changing, which is exactly the case
 	// cycleCompletion's own window math never had to handle before: top
@@ -712,13 +721,12 @@ func (m Model) viewportHeight() int {
 }
 
 // relayout resizes the viewport for the current completion state
-// without losing the reader's scroll position. SetHeight alone leaves
-// the content unclamped, and refresh(false) jumps to the bottom on
-// every call, which would fight a reader who scrolled up right as the
-// list opened or closed underneath them: it is called only when the
-// list changes, so GotoBottom only fires if the reader was already at
-// the bottom — or if shrinking the viewport left it scrolled past the
-// bottom, which SetHeight does not reclamp on its own (bubbles v2.2.1).
+// without losing the reader's scroll position. Only the height
+// changes, so the content need not be rebuilt: SetHeight alone is
+// enough, except that it leaves the content unclamped, so GotoBottom
+// fires if the reader was already at the bottom — or if shrinking the
+// viewport left it scrolled past the bottom, which SetHeight does not
+// reclamp on its own (bubbles v2.2.1).
 func (m *Model) relayout() {
 	if !m.ready {
 		return
@@ -1069,21 +1077,65 @@ func (m *Model) acceptCompletion() {
 	}
 }
 
-// refresh rebuilds the viewport content from the transcript.
-func (m *Model) refresh(follow bool) {
+// anchor is where the reader is in the transcript, expressed in rows
+// rather than viewport lines: a re-render changes how many lines each
+// row takes (a spoiler revealed, timestamps added, a narrower wrap),
+// so a plain line offset would slide to a different row.
+type anchor struct {
+	// bottom means the reader is following the newest message and a
+	// re-render keeps them there; item and within are then unused.
+	bottom bool
+	// item is the transcript row under the top of the screen and
+	// within how many lines into it the screen starts.
+	item, within int
+}
+
+// locate reads the reader's anchor off the viewport as it stands. It
+// must run before the transcript or the widget changes; refresh takes
+// the result so the caller decides what the anchor was taken against
+// (push, for one, trims rows after it).
+func (m Model) locate() anchor {
+	if !m.ready || m.vp.AtBottom() || len(m.starts) == 0 {
+		return anchor{bottom: true}
+	}
+	y := m.vp.YOffset()
+	i := sort.Search(len(m.starts), func(i int) bool {
+		return m.starts[i] > y
+	}) - 1
+	if i < 0 {
+		return anchor{bottom: true}
+	}
+	return anchor{item: i, within: y - m.starts[i]}
+}
+
+// refresh rebuilds the viewport content from the transcript and puts
+// the reader back at a: the bottom, or the same row at the top of the
+// screen. within is clamped to the row's new height, so a row that
+// shrank (a spoiler hidden again) does not push the screen into the
+// row after it.
+func (m *Model) refresh(a anchor) {
 	if !m.ready {
 		return
 	}
-	atBottom := m.vp.AtBottom()
 	var lines []string
+	starts := make([]int, len(m.items))
 	wrap := lipgloss.NewStyle().Width(m.vp.Width())
-	for _, it := range m.items {
-		lines = append(lines, wrap.Render(m.renderItem(it)))
+	for i, it := range m.items {
+		starts[i] = len(lines)
+		lines = append(lines, strings.Split(wrap.Render(m.renderItem(it)), "\n")...)
 	}
+	m.starts = starts
 	m.vp.SetContent(strings.Join(lines, "\n"))
-	if follow && atBottom || !follow {
+	if a.bottom || a.item >= len(starts) {
 		m.vp.GotoBottom()
+		return
 	}
+	end := len(lines)
+	if a.item+1 < len(starts) {
+		end = starts[a.item+1]
+	}
+	within := min(a.within, end-starts[a.item]-1)
+	m.vp.SetYOffset(starts[a.item] + within)
 }
 
 // renderItem draws one transcript row.
