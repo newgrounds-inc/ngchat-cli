@@ -46,8 +46,8 @@ func (s styleState) apply(text string) string {
 	return st.Render(text)
 }
 
-// link tracks an open <a> so the href can be appended when the visible
-// text differs from it.
+// link tracks an open <a> so the href can be checked against the visible
+// text once it is complete.
 type link struct {
 	href string
 	text strings.Builder
@@ -149,14 +149,18 @@ func Text(fragment string) string {
 				if len(links) > 0 {
 					l := links[len(links)-1]
 					links = links[:len(links)-1]
-					// The visible href stays even though the text is
-					// already a hyperlink: a terminal without OSC 8
-					// support would otherwise show a bare word with no
-					// way to reach the URL. A mention is the exception:
-					// "@bob" already names where it goes, provided the
-					// href really is bob's page (mentionTarget).
+					// The text is already an OSC 8 hyperlink, so the href
+					// is not repeated after it: a moderator's Markdown
+					// link reads as its label, the way it does on the web,
+					// at the cost of terminals without OSC 8 (macOS
+					// Terminal.app) having no way to reach it. A mention
+					// is the one place the target is still shown: "@bob"
+					// claims a destination, so an href that is not bob's
+					// page (mentionTarget) is spelled out rather than
+					// letting the name vouch for a link it does not own.
 					text := strings.TrimSpace(l.text.String())
-					if l.href != "" && text != l.href && !mentionTarget(text, l.href) {
+					if l.href != "" && strings.HasPrefix(text, "@") &&
+						!mentionTarget(text, l.href) {
 						out.WriteString(Hyperlink(l.href,
 							dimStyle.Render(" <"+l.href+">")))
 					}

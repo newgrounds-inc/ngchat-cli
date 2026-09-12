@@ -32,7 +32,7 @@ func TestText(t *testing.T) {
 		// A link whose visible text already is the URL needs no repeat.
 		{"link text differs from href",
 			`<a href="https://example.com/x">click</a>`,
-			"click <https://example.com/x>"},
+			"click"},
 		{"link text equals href",
 			`<a href="https://example.com/x">https://example.com/x</a>`,
 			"https://example.com/x"},
@@ -44,6 +44,12 @@ func TestText(t *testing.T) {
 			"@bob"},
 		{"group mention keeps only the name",
 			`<a href="https://www.newgrounds.com" title="Visit Newgrounds!" target="_blank">@!everyone</a>`,
+			"@!everyone"},
+		{"mention on the dev stack keeps only the name",
+			`<a href="//brenbot.newgrounds-d.com" title="Check out BrenBot's user page!" target="_blank">@BrenBot</a>`,
+			"@BrenBot"},
+		{"group mention on the dev stack keeps only the name",
+			`<a href="https://www.newgrounds-d.com" title="Visit Newgrounds!" target="_blank">@!everyone</a>`,
 			"@!everyone"},
 
 		{"image with alt and src",
@@ -88,15 +94,15 @@ func TestTextStylesAreApplied(t *testing.T) {
 }
 
 // TestTextHyperlinks checks the OSC 8 wrapping itself, which plain()
-// strips: the link text and the visible href both carry the URL.
+// strips: the link text is the only carrier of the URL.
 func TestTextHyperlinks(t *testing.T) {
 	got := Text(`<a href="https://example.com/x">click</a>`)
 	want := "\x1b]8;;https://example.com/x\x1b\\"
-	if strings.Count(got, want) != 2 {
-		t.Errorf("Text() = %q, want two hyperlink openers for %q", got, want)
+	if strings.Count(got, want) != 1 {
+		t.Errorf("Text() = %q, want one hyperlink opener for %q", got, want)
 	}
-	if strings.Count(got, "\x1b]8;;\x1b\\") != 2 {
-		t.Errorf("Text() = %q, want two hyperlink closers", got)
+	if strings.Count(got, "\x1b]8;;\x1b\\") != 1 {
+		t.Errorf("Text() = %q, want one hyperlink closer", got)
 	}
 	if Hyperlink("", "x") != "x" {
 		t.Error("Hyperlink with no URL should return the text unchanged")

@@ -296,7 +296,7 @@ func TestAccessDeniedQuitsWithNotice(t *testing.T) {
 		Err: fmt.Errorf("access denied: %w", &client.AccessDenied{
 			Message: `NG Chat is a <a href="https://www.newgrounds.com/supporter">supporter only</a> feature, sorry 😕.`})})
 	got := plain(next.(Model).Denied())
-	want := "NG Chat is a supporter only <https://www.newgrounds.com/supporter> feature, sorry 😕."
+	want := "NG Chat is a supporter only feature, sorry 😕."
 	if got != want {
 		t.Errorf("Denied() = %q, want %q", got, want)
 	}
