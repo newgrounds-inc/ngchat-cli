@@ -120,6 +120,10 @@ screen or a reconnect loop.
 - [ ] A very long message wraps inside the viewport; no horizontal
       scroll, no status bar pushed off the bottom.
 - [ ] Emoji and CJK in a message: widths correct, no misaligned rows.
+- [ ] Send `:wave_tone2:`: one skin-toned hand. Hand plus a color
+      swatch means the terminal does not shape modifiers (VS Code's
+      terminal does this; `printf` of the bytes shows the same), not a
+      client bug; see `docs/internals/render.md`.
 - [ ] Resize the terminal narrower and wider: the transcript reflows,
       the status bar stays one line, the input stays at the bottom.
 - [ ] Links are clickable (OSC 8) in a terminal that supports it, and
