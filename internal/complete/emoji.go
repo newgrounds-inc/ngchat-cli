@@ -105,8 +105,8 @@ func (Emoji) Candidates(term string) []Candidate {
 // ":transgender_symbol:") also measure narrower than they render in
 // some terminals; nothing here is wrong about those specifically, so
 // they are left alone rather than special-cased like the modifier
-// sequences — see AGENTS.md and the manual test plan for what to
-// eyeball on a new terminal.
+// sequences — see docs/internals/complete.md and the manual test plan
+// for what to eyeball on a new terminal.
 func glyphCell(g string) string {
 	w := ansi.StringWidth(g)
 	if w < 2 && hasEmojiModifier(g) {

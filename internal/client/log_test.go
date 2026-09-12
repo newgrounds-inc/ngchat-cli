@@ -21,7 +21,7 @@ func TestRedact(t *testing.T) {
 		{"spaced token key",
 			`{"token" : "abc"}`, `{"token" : "[redacted]"}`},
 		{"cookie header",
-			"Cookie: ng_remember=abc123; newgrounds_session=s3; XSRF-TOKEN=x%3D; serverid=bcolby2",
+			"Cookie: ng_remember=abc123; newgrounds_session=s3; XSRF-TOKEN=x%3D; serverid=backend",
 			"Cookie: ng_remember=[redacted]; newgrounds_session=[redacted]; XSRF-TOKEN=[redacted]; serverid=[redacted]"},
 		{"cookie in error text",
 			`mint: 401 for ng_remember=abc`,

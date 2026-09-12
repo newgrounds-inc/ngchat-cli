@@ -20,8 +20,10 @@ production, where they are not):
 ```sh
 export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws
 export NGCHAT_SITE_URL=https://www.newgrounds-d.com
-export NGCHAT_ROUTING_COOKIE='serverid=bcolby2'
+export NGCHAT_ROUTING_COOKIE='serverid=<backend>'
 ```
+
+`<backend>` is the dev backend your stack runs on; see `docs/smoke.md`.
 
 On Windows (PowerShell) that is `$env:NGCHAT_WS_URL = '...'` and so on.
 

@@ -36,8 +36,8 @@ type Command struct {
 // (32 rows) plus the CLI-local /who, reconciled by hand against
 // upstream commit b54377d7
 // (src/client/app/chat/autocomplete/slash_commands.ts) under ADR
-// 0002's drift contract, extended to this table by AGENTS.md's
-// internal/complete paragraph. The table keeps upstream's own order
+// 0002's drift contract, extended to this table by
+// docs/internals/protocol.md. The table keeps upstream's own order
 // (already alphabetical by name), with /who appended after it, so a
 // diff against upstream's SLASH_COMMANDS array is a straight read;
 // Candidates re-sorts its filtered result, so this declaration order

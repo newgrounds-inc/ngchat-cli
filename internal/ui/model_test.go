@@ -1641,7 +1641,7 @@ func TestMentionCompletionFollowsRoster(t *testing.T) {
 }
 
 // TestMentionCompletionSelfNeverStale guards the closure-freshness
-// requirement in AGENTS.md's internal/ui paragraph, in two halves.
+// requirement in docs/internals/ui.md, in two halves.
 // completionSources must build complete.Mentions bound to the current
 // *Model on every call, not close over the model as it stood in New:
 // a closure captured that early would trip the first assertion before
