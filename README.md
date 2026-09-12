@@ -18,7 +18,7 @@ graphics) and channel switching are on the [roadmap](docs/roadmap.md);
 Grab a binary from [Releases](../../releases), or:
 
 ```sh
-go install github.com/newgrounds-inc/ngchat-cli/cmd/ngchat@v1.0.0-rc.5
+go install github.com/newgrounds-inc/ngchat-cli/cmd/ngchat@v1.0.0-rc.6
 ```
 
 Until `v1.0.0` is tagged, `@latest` resolves to the old `v0.1.0`
