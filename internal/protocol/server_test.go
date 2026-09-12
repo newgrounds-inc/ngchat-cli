@@ -246,6 +246,21 @@ func TestDecodeTolerance(t *testing.T) {
 		want  string // expected Unknown.Name
 	}{
 		{"unrecognized name", `{"name":"somethingNew","x":1}`, "somethingNew"},
+		// Upstream frames this client chooses not to decode (issue #6):
+		// three audio effects a TUI should not play unprompted, and
+		// embeds, which the roadmap defers. Listed so a future port is a
+		// decision that has to touch this table, not a silent fallthrough.
+		{"airhorn is ignored",
+			`{"name":"airhorn","channelID":1,"serverTime":1}`, "airhorn"},
+		{"playSoundEffect is ignored",
+			`{"name":"playSoundEffect","channelID":1,"effectName":"x","serverTime":1}`,
+			"playSoundEffect"},
+		{"playSoundboardTrigger is ignored",
+			`{"name":"playSoundboardTrigger","channelID":1,"triggerId":"t","userID":2,"serverTime":1}`,
+			"playSoundboardTrigger"},
+		{"messageEmbeds is ignored",
+			`{"name":"messageEmbeds","channelID":1,"id":5,"userID":2,"embeds":[],"serverTime":1}`,
+			"messageEmbeds"},
 		{"known name, undecodable payload",
 			`{"name":"channelID","channelID":"not-a-number"}`, "channelID"},
 		{"invalid json", `not json at all`, ""},

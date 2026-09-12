@@ -11,7 +11,9 @@ the intent.
   ngchat login`)
 - Images and emote sprites (emotes render as `:code:`)
 - Sound playback
-- Rich embed layout (`messageEmbeds` renders at most as text)
+- Embeds: the `messageEmbeds` frame and the `embeds` field on messages
+  are not decoded; a link-preview line under the message is the
+  plausible TUI shape
 - Markdown composition (`isMarkdown` on outbound messages)
 - Passwordless email-only accounts
 
@@ -23,6 +25,9 @@ the intent.
   source from the site and a URL fetch path in the render layer.
 - **Soundboard**: first the narrated `X played Y` line and a `/sfx`
   list; real audio investigated later with `CGO_ENABLED=0` as a hard
-  constraint on the static binary.
+  constraint on the static binary. Until then the narrated line shows
+  for a sound nobody heard: upstream tags it with `triggerId` so a
+  client that drops `playSoundboardTrigger` can hide the row too, and
+  this client decodes neither.
 - User list as a side pane once the UI gets a real pass.
 - Homebrew tap once Releases are steady.

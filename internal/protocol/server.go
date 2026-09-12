@@ -8,8 +8,10 @@ type envelope struct {
 }
 
 // Authenticated confirms a successful authenticate and describes the user.
+// Upstream's clientHash (a bundle-staleness marker for the web SPA,
+// optional since 18.7.0 and slated for removal) is deliberately absent:
+// a CLI has no bundle to compare it against.
 type Authenticated struct {
-	ClientHash string          `json:"clientHash"`
 	IsAdmin    bool            `json:"isAdmin"`
 	IsChatMod  bool            `json:"isChatMod"`
 	IsSiteMod  bool            `json:"isSiteMod"`
