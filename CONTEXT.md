@@ -78,6 +78,34 @@ follow-up event that clients attach to the original message by ID.
 A message flagged to stay hidden until the reader deliberately reveals
 it.
 
+**Transcript**:
+The scrolling record of everything shown for this run: chat, DMs,
+events, and gap markers, oldest first. Capped; the oldest rows are
+dropped, the same loss a gap is. Never persisted.
+_Avoid_: scrollback, history, log
+
+**Row**:
+One entry in the transcript: a chat line, a DM, a `/me` or `/slap`, a
+server or client event, or a gap marker. A row keeps its source
+(server HTML or plain text) and is drawn on demand, so reveal and
+timestamp toggles redraw every row from source.
+_Avoid_: item, line (a row may draw as several lines), message (not
+every row is one)
+
+**Anchor**:
+Where the reader is in the transcript, held as a row rather than a
+screen line: either following the newest row, or a specific row under
+the top of the screen plus how far into it the screen starts. Row
+heights change on reveal, timestamp and resize, so a line offset alone
+would land on a different row.
+_Avoid_: scroll position, offset
+
+**Following**:
+The reader is at the bottom and each new row keeps them there. Paging
+up stops following; `end`, typing, or sending resumes it. While not
+following, the help row becomes the "more messages below" control.
+_Avoid_: auto-scroll, tailing
+
 **Theme**:
 A named palette of *roles* (base, primary, secondary, accent, neutral,
 info, success, warning, error, username), the same roles the web
