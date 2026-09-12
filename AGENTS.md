@@ -251,7 +251,13 @@ is the viewport's, not the terminal's. A re-render (`refresh`) takes an
 `anchor` read off the viewport beforehand (`locate`): the bottom, or the
 row under the top of the screen plus lines into it, because a toggle or
 a resize changes row heights and a line offset alone would slide to a
-different row; `push` adjusts the anchor for rows the cap trimmed. While `Model.splash` is non-nil
+different row; `push` adjusts the anchor for rows the cap trimmed. The
+web's "more messages below" control is the help row while the reader
+is scrolled up (`helpLine`), rather than a row of its own or an overlay:
+neither resizes the viewport under the reader nor covers a line they
+paged to. `end` jumps back when scrolled up and stays the composer's
+otherwise; typing a character or sending also resumes following, as on
+the web. While `Model.splash` is non-nil
 the view is the splash (centered frame, state label, skip hint) and
 the chat layout is kept current underneath; `frameMsg` ticks it at
 30 fps, and it ends when the effect is done and the client is online,

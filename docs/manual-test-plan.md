@@ -129,6 +129,9 @@ screen or a reconnect loop.
       in the status bar and clears.
 - [ ] `pgup`/`pgdn` scroll the transcript; new messages while scrolled
       up do not yank the view.
+- [ ] Scrolled up, the help row reads `↓ more messages below · end to
+      jump`; `end` returns to the bottom and the hints come back.
+      Typing a character, or sending, also returns to the bottom.
 - [ ] Scrolled up next to a spoiler, `ctrl+s` and `ctrl+t` keep the
       same row at the top of the screen (rows above grow or shrink; the
       view does not jump to the bottom).

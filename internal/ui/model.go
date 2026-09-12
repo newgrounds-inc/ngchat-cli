@@ -347,6 +347,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.vp, cmd = m.vp.Update(msg)
 			return m, cmd
+		case "end":
+			// The jump the "more messages below" banner advertises.
+			// At the bottom already there is nothing to jump to, so the
+			// key keeps its textinput meaning (cursor to end of line).
+			if !m.vp.AtBottom() {
+				m.vp.GotoBottom()
+				return m, nil
+			}
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
@@ -369,11 +377,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.input.Reset()
+			// Sending resumes following, as on the web: the reply is
+			// about to land at the bottom and the sender wants to see it.
+			m.vp.GotoBottom()
 			m.recompute()
 			return m, nil
 		}
 		var cmd tea.Cmd
+		before := m.input.Value()
 		m.input, cmd = m.input.Update(msg)
+		if m.input.Value() != before {
+			// Typing while scrolled up means the reader is done
+			// reading back; jump to where the conversation is. Cursor
+			// moves alone do not count.
+			m.vp.GotoBottom()
+		}
 		if m.conn != nil && m.input.Value() != "" {
 			m.conn.SendTyping()
 		}
@@ -1206,13 +1224,7 @@ func (m Model) content() string {
 	// One line, always: a long stop reason would otherwise wrap the bar
 	// and push the layout off the bottom of the screen.
 	status = xansi.Truncate(status, max(0, m.vp.Width()-2), "…")
-	// Truncated the same way: a narrow terminal would otherwise wrap
-	// this into a second line and throw off every row count above it.
-	helpText := xansi.Truncate(
-		" enter send · tab complete · /who · pgup/pgdn scroll · "+
-			"ctrl+s spoilers · ctrl+t times · ctrl+c quit",
-		max(0, m.vp.Width()), "…")
-	help := m.st.help.Render(helpText)
+	help := m.helpLine()
 	rows := []string{
 		m.st.status.Width(m.vp.Width()).Render(status),
 		m.vp.View(),
@@ -1222,6 +1234,26 @@ func (m Model) content() string {
 	}
 	rows = append(rows, m.input.View(), help)
 	return strings.Join(rows, "\n")
+}
+
+// helpLine is the bottom row: the key hints, or, while the reader is
+// scrolled up, the web client's "more messages below" control in
+// their place. It takes the help row rather than a row of its own or
+// the transcript's last line so that scrolling neither resizes the
+// viewport under the reader nor covers a line they paged to. Drawn in
+// the status style so it stands out from the faint hints and keeps
+// its Reverse under NO_COLOR. Truncated like the status bar: a narrow
+// terminal would otherwise wrap it into a second line and throw off
+// every row count above it.
+func (m Model) helpLine() string {
+	w := max(0, m.vp.Width())
+	if !m.vp.AtBottom() {
+		banner := xansi.Truncate(" ↓ more messages below · end to jump", w, "…")
+		return m.st.status.Width(w).Render(banner)
+	}
+	return m.st.help.Render(xansi.Truncate(
+		" enter send · tab complete · /who · pgup/pgdn scroll · "+
+			"ctrl+s spoilers · ctrl+t times · ctrl+c quit", w, "…"))
 }
 
 // completionView draws the open completion list: a header row of key

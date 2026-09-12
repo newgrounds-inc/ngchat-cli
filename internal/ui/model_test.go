@@ -553,6 +553,79 @@ func TestPushTrimKeepsRowUnderTop(t *testing.T) {
 	}
 }
 
+// TestTypingResumesFollowing: typing into the composer while scrolled
+// up jumps to the bottom, as does sending; moving the cursor alone
+// does not, and the transcript rows themselves never do.
+func TestTypingResumesFollowing(t *testing.T) {
+	m, conn := completionModel()
+	m = sized(m, 80, 24)
+	for i := 0; i < 60; i++ {
+		m.push(item{kind: "event", text: fmt.Sprint(i)})
+	}
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	m.push(item{kind: "event", text: "later"})
+	if m.vp.AtBottom() {
+		t.Fatal("a new row yanked the scrolled-up reader")
+	}
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyLeft})
+	if m.vp.AtBottom() {
+		t.Error("a cursor move resumed following")
+	}
+	m = typeText(m, "h")
+	if !m.vp.AtBottom() {
+		t.Error("typing did not resume following")
+	}
+
+	m = typeText(m, "i")
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	m = keyEnterC(m)
+	if !m.vp.AtBottom() {
+		t.Error("sending did not resume following")
+	}
+	if !slices.Equal(conn.sent, []string{"hi"}) {
+		t.Errorf("sent = %q, want [hi]", conn.sent)
+	}
+}
+
+// TestScrolledUpBanner: the help row turns into the web client's
+// "more messages below" control while the reader is scrolled up, and
+// end jumps back. At the bottom end still belongs to the composer.
+func TestScrolledUpBanner(t *testing.T) {
+	m, _ := completionModel()
+	m = sized(m, 80, 24)
+	for i := 0; i < 60; i++ {
+		m.push(item{kind: "event", text: fmt.Sprint(i)})
+	}
+	lastRow := func(m Model) string {
+		rows := strings.Split(plain(m.content()), "\n")
+		return rows[len(rows)-1]
+	}
+	if !strings.Contains(lastRow(m), "enter send") {
+		t.Fatalf("help row at the bottom = %q", lastRow(m))
+	}
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if !strings.Contains(lastRow(m), "more messages below") {
+		t.Errorf("help row while scrolled up = %q", lastRow(m))
+	}
+	if rows := strings.Count(m.content(), "\n") + 1; rows != 24 {
+		t.Errorf("screen is %d rows with the banner, want 24", rows)
+	}
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	if !m.vp.AtBottom() {
+		t.Error("end did not jump to the bottom")
+	}
+	if !strings.Contains(lastRow(m), "enter send") {
+		t.Errorf("help row after the jump = %q", lastRow(m))
+	}
+
+	m = typeText(m, "ab")
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyHome})
+	m = press(m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	if got := m.input.Position(); got != 2 {
+		t.Errorf("end at the bottom moved the cursor to %d, want 2 (end of line)", got)
+	}
+}
+
 // TestEscDoesNotQuit: esc used to end the program, which is far too easy
 // to hit by reflex from a modal editor.
 func TestEscDoesNotQuit(t *testing.T) {
@@ -1040,13 +1113,19 @@ func TestCompletionResizesViewport(t *testing.T) {
 	}
 }
 
-// TestCompletionPreservesScrollPosition: opening or resizing the list
-// must not yank a reader who scrolled up back to the bottom.
+// TestCompletionPreservesScrollPosition: the list closing under a
+// reader who paged up with it open must not yank them to the bottom.
+// (Opening it cannot be tested the same way any more: typing the
+// trigger is what opens it, and typing resumes following.)
 func TestCompletionPreservesScrollPosition(t *testing.T) {
 	m, _ := completionModel()
 	m = sized(m, 80, 24)
 	for i := 0; i < 60; i++ {
 		m.push(item{kind: "event", text: fmt.Sprint(i)})
+	}
+	m = typeText(m, "@ali") // opens with 2 candidates, shrinking the viewport
+	if m.completion == nil {
+		t.Fatal("completion did not open")
 	}
 	m = press(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if m.vp.AtBottom() {
@@ -1054,13 +1133,9 @@ func TestCompletionPreservesScrollPosition(t *testing.T) {
 	}
 	before := m.vp.YOffset()
 
-	m = typeText(m, "@ali") // opens with 2 candidates, shrinking the viewport
-	after := m.vp.YOffset()
-	if after > before {
-		t.Errorf("YOffset grew from %d to %d; opening the list scrolled down", before, after)
-	}
-	if before-after > 3 { // the list+header take at most 3 rows here
-		t.Errorf("YOffset moved by %d, more than the list's own height", before-after)
+	m = keyEsc(m) // closes the list, growing the viewport back
+	if after := m.vp.YOffset(); after != before {
+		t.Errorf("YOffset moved from %d to %d; closing the list scrolled the reader", before, after)
 	}
 }
 

@@ -24,6 +24,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - OSC 8 hyperlinks for links and mentions; a labelled link shows only
   its label, as on the web.
 - `ctrl+t` toggles server timestamps, shown in the local zone.
+- While scrolled up, the help row becomes a `more messages below`
+  banner and `end` jumps back; typing or sending a message jumps back
+  too, as on the web.
 - `away` messages, `/me`, `/slap` and the subscribe notifications inbox
   render as faint event rows, worded as the server sends them.
 - `-debug` writes redacted frames and state transitions to a `0600` log
