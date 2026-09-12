@@ -15,42 +15,16 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
 	"github.com/newgrounds-inc/ngchat-cli/internal/protocol"
 	"github.com/newgrounds-inc/ngchat-cli/internal/render"
+	"github.com/newgrounds-inc/ngchat-cli/internal/run"
 )
 
 func main() {
-	routing := os.Getenv("NGCHAT_ROUTING_COOKIE")
-	site, err := auth.NewSite(os.Getenv("NGCHAT_SITE_URL"))
+	env := run.FromEnv()
+	site, err := run.NewSite(env)
 	if err != nil {
-		fmt.Println("NGCHAT_SITE_URL:", err)
+		fmt.Println(err)
 		os.Exit(2)
 	}
-	if routing != "" {
-		if err := site.SeedCookies(routing); err != nil {
-			fmt.Println("NGCHAT_ROUTING_COOKIE:", err)
-			os.Exit(2)
-		}
-	}
-	// SMOKE_NG_COOKIE is a raw cookie header; without it the stored
-	// remember cookie from `ngchat login` is used, which is how the
-	// login flow itself gets verified end to end. The source is printed
-	// because a stale export silently wins over a fresh login.
-	if header := os.Getenv("SMOKE_NG_COOKIE"); header != "" {
-		if err := site.SeedCookies(header); err != nil {
-			fmt.Println("SMOKE_NG_COOKIE:", err)
-			os.Exit(2)
-		}
-		fmt.Println("credential: SMOKE_NG_COOKIE from the environment " +
-			"(unset it to use the stored login)")
-	} else {
-		remember, err := (auth.Store{}).Load(site.CredentialKey())
-		if err != nil {
-			fmt.Println("no SMOKE_NG_COOKIE and no stored login:", err)
-			os.Exit(2)
-		}
-		site.SetRemember(remember)
-		fmt.Println("credential: stored login")
-	}
-	minter := &auth.ServiceTokenMinter{Site: site}
 
 	// SMOKE_SECONDS extends the run for renewal checks: with the site's
 	// APP_JWT_CHAT_TTL at ~90s, 150s is enough to see revalidate →
@@ -63,16 +37,29 @@ func main() {
 		time.Duration(seconds)*time.Second)
 	defer cancel()
 
-	if err := site.CheckChatURL(os.Getenv("NGCHAT_WS_URL")); err != nil {
-		fmt.Println("NGCHAT_WS_URL:", err)
+	// No login fallback: the harness is headless, so with nothing usable
+	// stored it stops and says what to do. The source is printed because
+	// an exported NGCHAT_NG_COOKIE silently wins over a fresh login.
+	source, err := run.Prepare(ctx, run.Options{
+		Env: env, Store: auth.Store{}, Site: site, Notices: os.Stdout,
+	})
+	if err != nil {
+		fmt.Println(err)
+		if errors.Is(err, run.ErrNoCredential) {
+			fmt.Println("run `ngchat login` against this site, or export " +
+				"NGCHAT_NG_COOKIE")
+		}
 		os.Exit(2)
 	}
-	c := client.New(client.Config{
-		WSURL:   os.Getenv("NGCHAT_WS_URL"),
-		Channel: "general",
-		Minter:  minter,
-		Cookie:  routing,
-	})
+	switch source {
+	case run.FromHeader:
+		fmt.Println("credential:", source,
+			"(unset it to use the stored login)")
+	default:
+		fmt.Println("credential:", source)
+	}
+
+	c := client.New(run.ClientConfig(env, site, nil))
 	go c.Run(ctx)
 
 	sent := false

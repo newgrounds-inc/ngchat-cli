@@ -12,7 +12,7 @@ option outside Newgrounds: the dev stack below is internal to NG staff.
 export NGCHAT_WS_URL=wss://chat.newgrounds-d.com/ws
 export NGCHAT_SITE_URL=https://www.newgrounds-d.com
 export NGCHAT_ROUTING_COOKIE='serverid=<backend>'   # dev proxy routing, every request
-export SMOKE_NG_COOKIE='ng_remember=...'      # raw cookie header; optional
+export NGCHAT_NG_COOKIE='ng_remember=...'     # raw cookie header; optional
 export SMOKE_SECONDS=150                      # optional; default 15
 go run ./cmd/smoke
 ```
@@ -23,11 +23,14 @@ without it dev answers 503 for every request.
 
 ## Verifying the login flow end to end
 
-Without `SMOKE_NG_COOKIE` the harness uses the remember cookie that
+Without `NGCHAT_NG_COOKIE` the harness uses the remember cookie that
 `ngchat login` stored: `NGCHAT_SITE_URL=... ngchat login`, then
-`go run ./cmd/smoke`. An exported `SMOKE_NG_COOKIE` wins over the
+`go run ./cmd/smoke`. An exported `NGCHAT_NG_COOKIE` wins over the
 stored login, so `unset` it first; the first smoke line names which
-source it used.
+source it used. The harness never prompts: with nothing exported and
+nothing stored for the site it exits 2 and says to run `ngchat login`,
+and a keyring that gave no answer is reported as that rather than as
+no login.
 
 ## Watching a token renewal
 

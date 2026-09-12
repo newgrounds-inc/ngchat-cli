@@ -23,9 +23,10 @@ headless `cmd/smoke` harness; `cmd/ngchat` is for UI work only).
 ## Architecture
 
 Four layers, each one package, with a channel as the only seam between
-network and UI, plus four pure packages the UI draws with. Each has a
-doc in `docs/internals/` naming its invariants and gotchas; read it
-before changing that package.
+network and UI, plus four pure packages the UI draws with and one step
+both binaries share to start a run. Each has a doc in
+`docs/internals/` naming its invariants and gotchas; read it before
+changing that package.
 
 - `internal/auth` — credentials, site login, chat JWT minting, the
   keyring/file store. `docs/internals/auth.md`, with
@@ -47,6 +48,9 @@ before changing that package.
   its viewport. `docs/internals/transcript.md`.
 - `internal/ui` — Bubble Tea: the chrome, splash timing, the
   completion list. `docs/internals/ui.md`.
+- `internal/run` — the one "prepare a run" step both binaries call:
+  environment, site, credential source, chat-URL check,
+  `client.Config`. `docs/internals/run.md`.
 
 The protocol, the slash-command table, the emote list and the emoji
 catalog all drift from the private `ngchat` repo by hand or by

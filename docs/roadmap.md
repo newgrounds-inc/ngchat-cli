@@ -37,16 +37,10 @@ the intent.
 ## Deepening candidates
 
 From the September 2026 architecture review. Candidate 1, the
-transcript package, landed as ADR 0007. The rest, in the order worth
-taking them:
+transcript package, landed as ADR 0007; candidate 2, the shared
+"prepare a run" step (`internal/run`), as ADR 0008. The rest, in the
+order worth taking them:
 
-- **One "prepare a run" step for `cmd/ngchat` and `cmd/smoke`** (strong,
-  cheapest). Site construction, the cookie-header override vs the
-  stored remember cookie, `CheckChatURL` and `client.Config` are
-  written twice and have already diverged (`NGCHAT_NG_COOKIE` vs
-  `SMOKE_NG_COOKIE`; smoke skips `Store.Migrate` and cannot tell
-  keyring-unavailable from not-found). Both copies are untested; give
-  `prepareSite` the narrowed-interface treatment `logout` has.
 - **Fold the composer out of `Model`** (strong). Twenty methods and
   five fields exist only because the completion list's state is split
   between `completionState`, the textinput and `Model.height`;

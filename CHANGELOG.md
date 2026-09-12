@@ -88,6 +88,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`charm.land`). Colors are now downsampled for the terminal at
   output time, so an entry-gate notice printed on exit renders the
   same way inside and outside the TUI.
+- The smoke harness reads `NGCHAT_NG_COOKIE` like the TUI;
+  `SMOKE_NG_COOKIE` is gone and operators who exported it must rename
+  it. Smoke also defaults to the production endpoints when the URL
+  variables are unset, runs the credential-store migration, exits 2
+  with `run ngchat login` instead of failing on a missing login, and
+  reports a locked keyring as such. Both binaries share the one
+  "prepare a run" step in `internal/run` (ADR 0008).
 
 ### Removed
 

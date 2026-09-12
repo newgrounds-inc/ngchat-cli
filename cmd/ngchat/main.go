@@ -23,6 +23,7 @@ import (
 	"github.com/newgrounds-inc/ngchat-cli/internal/auth"
 	"github.com/newgrounds-inc/ngchat-cli/internal/client"
 	"github.com/newgrounds-inc/ngchat-cli/internal/render"
+	"github.com/newgrounds-inc/ngchat-cli/internal/run"
 	"github.com/newgrounds-inc/ngchat-cli/internal/splash"
 	"github.com/newgrounds-inc/ngchat-cli/internal/theme"
 	"github.com/newgrounds-inc/ngchat-cli/internal/ui"
@@ -31,15 +32,8 @@ import (
 // version is stamped by GoReleaser.
 var version = "dev"
 
-const (
-	defaultWSURL   = "wss://chat.newgrounds.com/ws"
-	defaultSiteURL = "https://www.newgrounds.com"
-	// channel is the one room this client joins. There is one channel on
-	// the server today; switching is out of scope for the MVP.
-	channel       = "general"
-	signedOutHint = "signed out (password changed, or logged out); " +
-		"run `ngchat login`"
-)
+const signedOutHint = "signed out (password changed, or logged out); " +
+	"run `ngchat login`"
 
 func main() {
 	quiet := flag.Bool("quiet", false, "no terminal bell on mentions and DMs")
@@ -56,17 +50,14 @@ func main() {
 		return
 	}
 
-	wsURL := envOr("NGCHAT_WS_URL", defaultWSURL)
-	// Dev/staging proxy routing cookie (e.g. "serverid=..."), required
-	// on every request against the non-prod stack.
-	routing := os.Getenv("NGCHAT_ROUTING_COOKIE")
+	env := run.FromEnv()
 	store := auth.Store{}
 
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	site, err := newSite(routing)
+	site, err := run.NewSite(env)
 	if err != nil {
 		fatal(err)
 	}
@@ -88,17 +79,11 @@ func main() {
 		os.Exit(2)
 	}
 
-	// The chat URL matters only on the chat path, and is checked before
-	// any mint because the token minted from the site's cookie goes to
-	// it as the first frame. A stale NGCHAT_WS_URL must not block login
-	// or logout.
-	if err := site.CheckChatURL(wsURL); err != nil {
-		fatal(fmt.Errorf("NGCHAT_WS_URL: %w", err))
-	}
-	// Chat-only settings, like the URL above: resolved after the
-	// subcommand switch so a stale NGCHAT_THEME never blocks login or
-	// logout, and before prepareSite so a typo is answered at once
-	// rather than after a login prompt.
+	// Chat-only settings are resolved after the subcommand switch so a
+	// stale NGCHAT_THEME never blocks login or logout, and before
+	// run.Prepare so a typo is answered at once rather than after a
+	// login prompt. The chat URL is checked inside Prepare, so a stale
+	// NGCHAT_WS_URL is kept off login and logout the same way.
 	look, err := pickTheme(os.Getenv("NGCHAT_THEME"))
 	if err != nil {
 		fatal(err)
@@ -107,11 +92,19 @@ func main() {
 	if *noSplash || os.Getenv("NGCHAT_NO_SPLASH") != "" {
 		opening = nil
 	}
-	if err := prepareSite(ctx, store, site); err != nil {
+	if _, err := run.Prepare(ctx, run.Options{
+		Env: env, Store: store, Site: site, Notices: os.Stderr,
+		// The login leaves the jar authenticated, so the first mint
+		// needs no further setup.
+		Login: func(ctx context.Context) error {
+			_, err := login(ctx, store, site)
+			return err
+		},
+	}); err != nil {
 		exitLogin(ctx, err)
 	}
 	if err := runChat(ctx, chatOptions{
-		wsURL: wsURL, routing: routing, site: site,
+		env: env, site: site,
 		quiet: *quiet, debug: *debug, theme: look, splash: opening,
 	}); err != nil {
 		fatal(err)
@@ -198,13 +191,12 @@ func logout(ctx context.Context, store credentialStore, site revoker,
 
 // chatOptions carries what runChat needs from the flags and environment.
 type chatOptions struct {
-	wsURL   string
-	routing string
-	site    *auth.Site
-	quiet   bool
-	debug   bool
-	theme   theme.Theme
-	splash  splash.Effect // nil plays no opening animation
+	env    run.Env
+	site   *auth.Site
+	quiet  bool
+	debug  bool
+	theme  theme.Theme
+	splash splash.Effect // nil plays no opening animation
 }
 
 // pickTheme resolves NGCHAT_THEME: empty is the default, anything else
@@ -242,20 +234,14 @@ func runChat(ctx context.Context, opts chatOptions) error {
 		defer fmt.Fprintln(os.Stderr, "ngchat: debug log written to", path)
 		logger = slog.New(slog.NewTextHandler(f,
 			&slog.HandlerOptions{Level: slog.LevelDebug}))
-		logger.Info("ngchat start", "version", version, "ws", opts.wsURL)
+		logger.Info("ngchat start", "version", version, "ws", opts.env.WSURL)
 	}
 
-	chat := client.New(client.Config{
-		WSURL:   opts.wsURL,
-		Channel: channel,
-		Minter:  &auth.ServiceTokenMinter{Site: opts.site},
-		Cookie:  opts.routing,
-		Log:     logger,
-	})
+	chat := client.New(run.ClientConfig(opts.env, opts.site, logger))
 	go chat.Run(ctx)
 
 	prog := tea.NewProgram(
-		ui.New(chat, ui.Options{Channel: channel, Quiet: opts.quiet,
+		ui.New(chat, ui.Options{Channel: run.Channel, Quiet: opts.quiet,
 			Theme: opts.theme, Splash: opts.splash}),
 		tea.WithContext(ctx))
 	final, err := prog.Run()
@@ -331,59 +317,6 @@ func openDebugLog(path string) (*os.File, error) {
 		return nil, fmt.Errorf("debug log: %w", err)
 	}
 	return f, nil
-}
-
-// newSite builds the site client for the run, seeding the dev proxy
-// routing cookie so it rides on every request like it does in a browser.
-func newSite(routing string) (*auth.Site, error) {
-	site, err := auth.NewSite(envOr("NGCHAT_SITE_URL", defaultSiteURL))
-	if err != nil {
-		return nil, err
-	}
-	if routing != "" {
-		if err := site.SeedCookies(routing); err != nil {
-			return nil, fmt.Errorf("NGCHAT_ROUTING_COOKIE: %w", err)
-		}
-	}
-	return site, nil
-}
-
-// prepareSite gets the jar into a state that can mint: a raw cookie
-// header from the environment (dev and smoke), else the stored remember
-// cookie, else a first-run login. A v0.1 cookie-header slot is removed
-// on the way, since it cannot be converted (ADR 0003).
-func prepareSite(ctx context.Context, store auth.Store, site *auth.Site) error {
-	if header := os.Getenv("NGCHAT_NG_COOKIE"); header != "" {
-		if err := site.SeedCookies(header); err != nil {
-			return fmt.Errorf("NGCHAT_NG_COOKIE: %w", err)
-		}
-		return nil
-	}
-	removed, err := store.Migrate()
-	if err != nil {
-		return err
-	}
-	if removed {
-		fmt.Fprintln(os.Stderr, "ngchat: the cookie stored by an older "+
-			"version was removed; please log in once")
-	}
-	remember, err := store.Load(site.CredentialKey())
-	if errors.Is(err, auth.ErrKeyringUnavailable) {
-		// Whatever the keyring holds cannot be used this run; a fresh
-		// login lands in the file, which Load reads first from then on.
-		fmt.Fprintln(os.Stderr, "ngchat:", err, "; logging in again")
-	}
-	if errors.Is(err, auth.ErrNotFound) || errors.Is(err, auth.ErrKeyringUnavailable) {
-		// The login leaves the jar authenticated, so the first mint
-		// needs no further setup.
-		_, err := login(ctx, store, site)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	site.SetRemember(remember)
-	return nil
 }
 
 // exitLogin ends a failed login. An interrupt at a prompt is the user
@@ -477,14 +410,6 @@ func (p termPrompter) wait(ch <-chan readResult, cleanup func()) (string, error)
 	}
 }
 
-// envOr reads an environment variable with a default.
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 func usage() {
 	fmt.Fprintf(os.Stderr, `ngchat — Newgrounds Chat in your terminal
 
@@ -509,7 +434,7 @@ Both URLs must be wss/https unless the host is loopback, and the chat
 host must be on the site's domain. A login is stored per site, so
 switching NGCHAT_SITE_URL never sends one site's cookie to another; log
 in once per site.
-`, defaultWSURL, defaultSiteURL, strings.Join(theme.Names(), ", "),
+`, run.DefaultWSURL, run.DefaultSiteURL, strings.Join(theme.Names(), ", "),
 		theme.Default().Name)
 }
 
