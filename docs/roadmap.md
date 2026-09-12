@@ -9,13 +9,15 @@ the intent.
 - Channel switching (there is one channel, `general`)
 - Inline re-login inside the TUI (a signed-out run exits and says `run
   ngchat login`)
-- Images and emote sprites (emotes render as `:code:`)
+- Images and emote sprites: NG emotes render as `:code:`, since the
+  site marks them up as CSS sprite classes with no image URL. Unicode
+  emoji are plain text and already render; `:shortname` completes
+  them from an embedded catalog.
 - Sound playback
 - Embeds: the `messageEmbeds` frame and the `embeds` field on messages
   are not decoded; a link-preview line under the message is the
   plausible TUI shape
 - Markdown composition (`isMarkdown` on outbound messages)
-- Passwordless email-only accounts
 
 ## After v1.0.0
 
